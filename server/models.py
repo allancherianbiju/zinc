@@ -1,26 +1,6 @@
 from database import Base
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
-
-class Incidents(Base):
-    __tablename__ = "incident_data"
-    number = Column(String, primary_key=True, index=True)
-    issue_description = Column(String)
-    reassignment_count = Column(Integer)
-    reopen_count = Column(Integer)
-    made_sla = Column(Boolean)
-    caller_id = Column(String, index=True)
-    opened_at = Column(DateTime)
-    category = Column(String)
-    subcategory = Column(String)
-    u_symptom = Column(String)
-    cmdb_ci = Column(String)
-    priority = Column(String)
-    assigned_to = Column(String)
-    problem_id = Column(String, index=True)
-    resolved_by = Column(String)
-    closed_at = Column(DateTime)
-    resolved_at = Column(DateTime)
 
 class User(Base):
     __tablename__ = "users"

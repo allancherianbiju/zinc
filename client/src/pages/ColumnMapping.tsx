@@ -80,8 +80,13 @@ const ColumnMapping = () => {
 
   const handleSubmit = async () => {
     try {
-      await api.post("/mapping", { mapping, resolutionTimeField });
-      navigate("/processing");
+      await api.post("/mapping", {
+        mapping,
+        resolution_time_field: resolutionTimeField,
+      });
+      navigate("/processing", {
+        state: { mapping, resolution_time_field: resolutionTimeField },
+      });
     } catch (error) {
       console.error("Error submitting mapping:", error);
       // Handle error (e.g., show an error message to the user)
