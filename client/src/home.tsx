@@ -13,6 +13,7 @@ import {
   IconMoon,
 } from "@tabler/icons-react";
 import { useTheme } from "next-themes";
+import { useNavigate } from "react-router-dom";
 
 import {
   Button,
@@ -58,6 +59,7 @@ export default function Component() {
   const [user, setUser] = useState<User | null>(null);
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
+  const navigate = useNavigate();
 
   useEffect(() => {
     const storedUser = localStorage.getItem("user");
@@ -114,9 +116,11 @@ export default function Component() {
       console.log(response.data);
       toast({
         title: "Success",
-        description: `File uploaded successfully. ${response.data.rows_processed} rows processed.`,
+        description: "File uploaded successfully. Redirecting to preview...",
       });
       onOpenChange();
+      // Redirect to the preview page with the correct data
+      navigate("/preview", { state: { fileData: response.data } });
     } catch (error: any) {
       console.error(error);
       toast({

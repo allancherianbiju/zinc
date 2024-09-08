@@ -1,0 +1,83 @@
+import React from "react";
+import {
+  Navbar,
+  NavbarBrand,
+  NavbarContent,
+  NavbarItem,
+  Dropdown,
+  DropdownTrigger,
+  DropdownMenu,
+  DropdownItem,
+  Avatar,
+} from "@nextui-org/react";
+import { useTheme } from "next-themes";
+import { IconSun, IconMoon, IconLogout } from "@tabler/icons-react";
+import { Link } from "react-router-dom";
+
+export default function AppNavbar() {
+  const { theme, setTheme } = useTheme();
+  const user = JSON.parse(localStorage.getItem("user") || "null");
+
+  const handleSignOut = () => {
+    localStorage.removeItem("user");
+    // Redirect to home or login page
+    window.location.href = "/";
+  };
+
+  return (
+    <Navbar isBordered maxWidth="full">
+      <div className="container mx-auto px-4 flex justify-between items-center w-full">
+        <NavbarContent justify="start">
+          <NavbarBrand>
+            <Link to="/" className="font-bold text-inherit no-underline">
+              ZINC
+            </Link>
+          </NavbarBrand>
+        </NavbarContent>
+
+        <NavbarContent justify="end">
+          {user && (
+            <NavbarItem>
+              <Dropdown placement="bottom-end">
+                <DropdownTrigger>
+                  <Avatar
+                    isBordered
+                    className="transition-transform"
+                    name={user.name}
+                    size="sm"
+                    src={user.picture}
+                  />
+                </DropdownTrigger>
+                <DropdownMenu aria-label="Profile Actions" variant="flat">
+                  <DropdownItem key="profile" className="h-14 gap-2">
+                    <p className="font-semibold">Signed in as</p>
+                    <p className="font-semibold">{user.email}</p>
+                  </DropdownItem>
+                  <DropdownItem
+                    key="theme"
+                    startContent={
+                      theme === "light" ? <IconMoon /> : <IconSun />
+                    }
+                    onPress={() =>
+                      setTheme(theme === "light" ? "dark" : "light")
+                    }
+                  >
+                    Switch to {theme === "light" ? "Dark" : "Light"} mode
+                  </DropdownItem>
+                  <DropdownItem
+                    key="logout"
+                    color="danger"
+                    startContent={<IconLogout />}
+                    onPress={handleSignOut}
+                  >
+                    Log Out
+                  </DropdownItem>
+                </DropdownMenu>
+              </Dropdown>
+            </NavbarItem>
+          )}
+        </NavbarContent>
+      </div>
+    </Navbar>
+  );
+}
