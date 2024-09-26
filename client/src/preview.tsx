@@ -1,15 +1,27 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { DataTable } from "./components/data-table";
-import { columns } from "./components/columns";
 import {
   Breadcrumbs,
   BreadcrumbItem,
   Card,
   CardBody,
   Button,
+  Table,
+  TableHeader,
+  TableColumn,
+  TableBody,
+  TableRow,
+  TableCell,
+  Tooltip,
 } from "@nextui-org/react";
 import Navbar from "./components/navbar";
+
+const MAX_TEXT_LENGTH = 50; // Maximum length for truncated text
+
+const truncateText = (text: string, maxLength: number) => {
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength) + "...";
+};
 
 export default function Preview() {
   const location = useLocation();
@@ -21,20 +33,17 @@ export default function Preview() {
     return null;
   }
 
-  console.log("Preview fileData:", fileData);
+  const columns = useMemo(() => {
+    if (fileData.preview_data && fileData.preview_data.length > 0) {
+      return Object.keys(fileData.preview_data[0]);
+    }
+    return [];
+  }, [fileData.preview_data]);
 
-  // Ensure we're passing the correct structure to the mapping page
   const mappingData = {
-    columns:
-      fileData.preview_data && fileData.preview_data.length > 0
-        ? Object.keys(fileData.preview_data[0])
-        : Array.isArray(fileData.columns)
-        ? fileData.columns
-        : [],
+    columns: columns,
     // Include any other necessary data
   };
-
-  console.log("Mapping data to be passed:", mappingData);
 
   return (
     <div className="flex flex-col min-h-screen bg-background">
@@ -65,13 +74,40 @@ export default function Preview() {
           </Card>
         </div>
 
-        <DataTable columns={columns} data={fileData.preview_data} />
+        <Card className="mb-6">
+          <CardBody>
+            <Table aria-label="Preview data table">
+              <TableHeader>
+                {columns.map((column) => (
+                  <TableColumn key={column}>{column}</TableColumn>
+                ))}
+              </TableHeader>
+              <TableBody>
+                {fileData.preview_data.map((row: any, index: number) => (
+                  <TableRow key={index}>
+                    {columns.map((column) => (
+                      <TableCell key={column}>
+                        {column === "issue_description" ||
+                        column === "resolution_notes" ? (
+                          <Tooltip content={row[column]}>
+                            {truncateText(row[column], MAX_TEXT_LENGTH)}
+                          </Tooltip>
+                        ) : (
+                          row[column]
+                        )}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardBody>
+        </Card>
 
         <div className="mt-6 flex justify-end">
           <Button
             color="primary"
             onClick={() => {
-              console.log("Navigating to mapping with data:", mappingData);
               navigate("/mapping", { state: { fileData: mappingData } });
             }}
           >

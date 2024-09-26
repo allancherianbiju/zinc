@@ -11,7 +11,12 @@ import {
   Avatar,
 } from "@nextui-org/react";
 import { useTheme } from "next-themes";
-import { IconSun, IconMoon, IconLogout } from "@tabler/icons-react";
+import {
+  IconSun,
+  IconMoon,
+  IconLogout,
+  IconSettings,
+} from "@tabler/icons-react";
 import { Link } from "react-router-dom";
 
 export default function AppNavbar() {
@@ -63,6 +68,13 @@ export default function AppNavbar() {
                     }
                   >
                     Switch to {theme === "light" ? "Dark" : "Light"} mode
+                  </DropdownItem>
+                  <DropdownItem
+                    key="settings"
+                    startContent={<IconSettings />}
+                    onPress={() => (window.location.href = "/settings")}
+                  >
+                    Settings
                   </DropdownItem>
                   <DropdownItem
                     key="logout"
