@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import {
   Navbar,
   NavbarBrand,
@@ -22,6 +22,14 @@ import { Link } from "react-router-dom";
 export default function AppNavbar() {
   const { theme, setTheme } = useTheme();
   const user = JSON.parse(localStorage.getItem("user") || "null");
+  const [engagement, setEngagement] = useState<string>("");
+
+  useEffect(() => {
+    const currentEngagement = localStorage.getItem("currentEngagement");
+    if (currentEngagement) {
+      setEngagement(JSON.parse(currentEngagement).name);
+    }
+  }, []);
 
   const handleSignOut = () => {
     localStorage.removeItem("user");
@@ -35,7 +43,7 @@ export default function AppNavbar() {
         <NavbarContent justify="start">
           <NavbarBrand>
             <Link to="/" className="font-bold text-inherit no-underline">
-              ZINC
+              ZINC {engagement && `/ ${engagement}`}
             </Link>
           </NavbarBrand>
         </NavbarContent>

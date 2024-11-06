@@ -11,9 +11,15 @@ import {
   IconInfoCircle,
   IconSun,
   IconMoon,
+  IconCirclePlus,
 } from "@tabler/icons-react";
 import { useTheme } from "next-themes";
 import { useNavigate } from "react-router-dom";
+import axios from "axios";
+import { toast } from "sonner";
+import dataImage from "./assets/pexels-pixabay-210607.jpg";
+import connectImage from "./assets/pexels-cookiecutter-1148820.jpg";
+import demoImage from "./assets/pexels-energepic-com-27411-159888.jpg";
 
 import {
   Button,
@@ -39,15 +45,24 @@ import {
   DropdownMenu,
   DropdownItem,
   Avatar,
+  RadioGroup,
+  Radio,
+  Select,
+  SelectItem,
 } from "@nextui-org/react";
 
 import api from "./api";
-import { useToast } from "@/hooks/use-toast";
 
 type User = {
   email: string;
   name: string;
   picture: string;
+};
+
+type Engagement = {
+  id: string;
+  name: string;
+  userId: string;
 };
 
 export default function Component() {
@@ -58,8 +73,13 @@ export default function Component() {
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const { theme, setTheme } = useTheme();
-  const { toast } = useToast();
   const navigate = useNavigate();
+  const [engagements, setEngagements] = useState<Engagement[]>([]);
+  const [selectedEngagement, setSelectedEngagement] = useState<
+    "new" | "existing"
+  >("new");
+  const [engagementName, setEngagementName] = useState("");
+  const [existingEngagementId, setExistingEngagementId] = useState("");
 
   useEffect(() => {
     const storedUser = localStorage.getItem("user");
@@ -68,13 +88,26 @@ export default function Component() {
     }
   }, []);
 
-  // Add this useEffect hook
   useEffect(() => {
     const timer = setInterval(() => {
       setShowFullName((prev) => !prev);
     }, 5000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const fetchEngagements = async () => {
+      if (user) {
+        try {
+          const response = await api.get("/engagements");
+          setEngagements(response.data);
+        } catch (error) {
+          console.error("Failed to fetch engagements:", error);
+        }
+      }
+    };
+    fetchEngagements();
+  }, [user]);
 
   const login = useGoogleLogin({
     onSuccess: async (response) => {
@@ -104,32 +137,49 @@ export default function Component() {
 
   const handleUpload = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!file) return;
     setIsLoading(true);
-    const formData = new FormData();
-    formData.append("file", file);
 
     try {
+      const formData = new FormData();
+      if (file) {
+        formData.append("file", file);
+      }
+      formData.append("engagement_type", selectedEngagement);
+      if (selectedEngagement === "new") {
+        formData.append("engagement_name", engagementName);
+      } else {
+        formData.append("engagement_id", existingEngagementId);
+      }
+
       const response = await api.post("/upload", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
       });
-      console.log(response.data);
-      toast({
-        title: "Success",
-        description: "File uploaded successfully. Redirecting to preview...",
-      });
+
+      toast.success("File uploaded successfully.");
       onOpenChange();
-      // Redirect to the preview page with the correct data
       navigate("/preview", { state: { fileData: response.data } });
-    } catch (error: any) {
-      console.error(error);
-      toast({
-        title: "Error",
-        description:
-          error.response?.data?.detail ||
-          "An error occurred while uploading the file.",
-        variant: "destructive",
-      });
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const errorMessage = error.response?.data?.detail || "Upload failed";
+
+        if (errorMessage.includes("already exists")) {
+          toast.error(
+            "Engagement name already exists. Please choose a different name."
+          );
+        } else if (errorMessage.includes("Invalid file format")) {
+          toast.error("Please upload a valid CSV file.");
+        } else if (error.response?.status === 413) {
+          toast.error("File size too large. Please upload a smaller file.");
+        } else {
+          toast.error(errorMessage);
+        }
+
+        console.error("Upload error:", error.response?.data);
+      } else {
+        toast.error("An unexpected error occurred. Please try again.");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -242,120 +292,238 @@ export default function Component() {
                 </>
               )}
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              <Card className="w-full">
-                <CardHeader>
-                  <h4 className="text-lg font-semibold">Upload Dataset</h4>
-                </CardHeader>
-                <CardBody>
-                  <p className="mb-4">Analyze your own data</p>
-                  <Button
-                    color="primary"
-                    startContent={<IconUpload className="w-4 h-4" />}
-                    onPress={onOpen}
-                    isDisabled={!user}
-                  >
-                    Upload File
-                  </Button>
-                  <Modal
-                    backdrop="blur"
-                    isOpen={isOpen}
-                    onOpenChange={onOpenChange}
-                    placement="top-center"
-                  >
-                    <ModalContent>
-                      {(onClose) => (
-                        <>
-                          <ModalHeader className="flex items-center gap-1">
-                            Upload Dataset
-                            <Tooltip
-                              content={
-                                <div className="px-1 py-2">
-                                  <div className="text-small font-bold">
-                                    Important Information
+            {user && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                <Card isFooterBlurred className="w-full h-[250px]">
+                  <CardHeader className="absolute z-10 top-1 flex-col items-start">
+                    <p className="text-tiny text-white/60 uppercase font-bold">
+                      Upload Dataset
+                    </p>
+                    <h4 className="text-white/90 font-medium text-xl">
+                      Analyze your own data{" "}
+                    </h4>
+                  </CardHeader>
+                  <Image
+                    removeWrapper
+                    alt="Card example background"
+                    className="z-0 w-full h-full scale-125 -translate-y-6 object-cover"
+                    src={dataImage}
+                  />
+                  <CardBody></CardBody>
+                  <CardFooter className="absolute bg-white/30 bottom-0 border-t-1 border-zinc-100/50 z-10 justify-between">
+                    <div>
+                      <p className="text-white/60">
+                        Upload your Engagement Data
+                      </p>
+                    </div>
+                    <Button
+                      // className="text-tiny"
+                      startContent={<IconUpload className="w-4 h-4" />}
+                      onPress={onOpen}
+                      isDisabled={!user}
+                      radius="full"
+                      // size="sm"
+                    >
+                      Upload File
+                    </Button>
+                    <Modal
+                      backdrop="blur"
+                      isOpen={isOpen}
+                      onOpenChange={onOpenChange}
+                      placement="top-center"
+                    >
+                      <ModalContent>
+                        {(onClose) => (
+                          <>
+                            <ModalHeader className="flex items-center gap-1">
+                              Upload Dataset
+                              <Tooltip
+                                content={
+                                  <div className="px-1 py-2">
+                                    <div className="text-small font-bold">
+                                      Important Information
+                                    </div>
+                                    <li>Please select a CSV file to upload.</li>
+                                    <li>
+                                      The selected dataset should only contain
+                                      closed incidents.
+                                    </li>
+                                    <li>
+                                      Ensure that the required columns are
+                                      present.
+                                    </li>
                                   </div>
-                                  <li>Please select a CSV file to upload.</li>
-                                  <li>
-                                    The selected dataset should only contain
-                                    closed incidents.
-                                  </li>
-                                  <li>
-                                    Ensure that the required columns are
-                                    present.
-                                  </li>
-                                </div>
-                              }
-                            >
-                              <IconInfoCircle className="w-5 h-5" />
-                            </Tooltip>
-                          </ModalHeader>
-                          <form onSubmit={handleUpload}>
-                            <ModalBody>
-                              <Input
-                                type="file"
-                                onChange={handleFileChange}
-                                accept=".csv"
-                                startContent={
-                                  <IconUpload className="w-4 h-4" />
                                 }
-                              />
-                              <Checkbox
-                                isSelected={agreedToTerms}
-                                onValueChange={setAgreedToTerms}
                               >
-                                I agree to the{" "}
-                                <Link color="primary" href="#" size="sm">
-                                  terms and conditions
-                                </Link>
-                              </Checkbox>
-                            </ModalBody>
-                            <ModalFooter>
-                              <Button
-                                color="primary"
-                                type="submit"
-                                isLoading={isLoading}
-                                isDisabled={!agreedToTerms || !file}
-                              >
-                                {isLoading ? "Uploading" : "Upload"}
-                              </Button>
-                            </ModalFooter>
-                          </form>
-                        </>
-                      )}
-                    </ModalContent>
-                  </Modal>
-                </CardBody>
-              </Card>
-              <Card className="w-full">
-                <CardHeader>
-                  <h4 className="text-lg font-semibold">Connect Database</h4>
-                </CardHeader>
-                <CardBody>
-                  <p className="mb-4">Stream data in real-time</p>
-                  <Button
-                    disabled
-                    startContent={<IconDatabase className="w-4 h-4" />}
-                  >
-                    Coming Soon
-                  </Button>
-                </CardBody>
-              </Card>
-              <Card className="w-full">
-                <CardHeader>
-                  <h4 className="text-lg font-semibold">View Demo</h4>
-                </CardHeader>
-                <CardBody>
-                  <p className="mb-4">See Zinc in action</p>
-                  <Button
-                    color="secondary"
-                    startContent={<IconPlayerPlay className="w-4 h-4" />}
-                    isDisabled={!user}
-                  >
-                    Start Demo
-                  </Button>
-                </CardBody>
-              </Card>
-            </div>
+                                <IconInfoCircle className="w-5 h-5" />
+                              </Tooltip>
+                            </ModalHeader>
+                            <form
+                              onSubmit={handleUpload}
+                              encType="multipart/form-data"
+                            >
+                              <ModalBody>
+                                <RadioGroup
+                                  label="Select Engagement"
+                                  value={selectedEngagement}
+                                  onValueChange={(value) =>
+                                    setSelectedEngagement(
+                                      value as "new" | "existing"
+                                    )
+                                  }
+                                  orientation="horizontal"
+                                >
+                                  <Radio value="new">Create New</Radio>
+                                  <Radio
+                                    value="existing"
+                                    isDisabled={engagements.length === 0}
+                                    description={
+                                      engagements.length === 0
+                                        ? "No existing engagements found"
+                                        : undefined
+                                    }
+                                  >
+                                    Select Existing
+                                  </Radio>
+                                </RadioGroup>
+
+                                {selectedEngagement === "new" ? (
+                                  <Input
+                                    label="Engagement Name"
+                                    placeholder="Enter engagement name"
+                                    value={engagementName}
+                                    onValueChange={setEngagementName}
+                                    isRequired
+                                    description="This name should be unique and will be used to identify your engagement"
+                                  />
+                                ) : (
+                                  <Select
+                                    label="Select Existing Engagement"
+                                    placeholder="Choose an engagement"
+                                    selectedKeys={
+                                      existingEngagementId
+                                        ? [existingEngagementId]
+                                        : []
+                                    }
+                                    onChange={(e) =>
+                                      setExistingEngagementId(e.target.value)
+                                    }
+                                    isRequired
+                                    isDisabled={engagements.length === 0}
+                                    description="Select from one of your existing engagements. The uploaded dataset will be added to this engagement."
+                                  >
+                                    {engagements.map((engagement) => (
+                                      <SelectItem
+                                        key={engagement.id}
+                                        value={engagement.id}
+                                      >
+                                        {engagement.name}
+                                      </SelectItem>
+                                    ))}
+                                  </Select>
+                                )}
+                                <Divider className="my-4" />
+
+                                <Input
+                                  type="file"
+                                  onChange={handleFileChange}
+                                  accept=".csv"
+                                  isRequired
+                                  startContent={
+                                    <IconUpload className="w-4 h-4" />
+                                  }
+                                />
+
+                                <Checkbox
+                                  isSelected={agreedToTerms}
+                                  onValueChange={setAgreedToTerms}
+                                >
+                                  I agree to the{" "}
+                                  <Link color="primary" href="#" size="sm">
+                                    terms and conditions
+                                  </Link>
+                                </Checkbox>
+                              </ModalBody>
+                              <ModalFooter>
+                                <Button
+                                  color="primary"
+                                  type="submit"
+                                  isLoading={isLoading}
+                                  isDisabled={
+                                    !agreedToTerms ||
+                                    !file ||
+                                    (selectedEngagement === "new" &&
+                                      !engagementName) ||
+                                    (selectedEngagement === "existing" &&
+                                      !existingEngagementId)
+                                  }
+                                >
+                                  {isLoading ? "Uploading" : "Upload"}
+                                </Button>
+                              </ModalFooter>
+                            </form>
+                          </>
+                        )}
+                      </ModalContent>
+                    </Modal>
+                  </CardFooter>
+                </Card>
+                <Card isFooterBlurred className="w-full h-[250px]">
+                  <CardHeader className="absolute z-10 top-1 flex-col items-start">
+                    <p className="text-tiny text-white/60 uppercase font-bold">
+                      Connect Database
+                    </p>
+                    <h4 className="text-white/90 font-medium text-xl">
+                      Get real-time insights
+                    </h4>
+                  </CardHeader>
+                  <Image
+                    removeWrapper
+                    alt="Card example background"
+                    className="z-0 w-full h-full scale-125 -translate-y-6 object-cover"
+                    src={connectImage}
+                  />
+                  <CardBody></CardBody>
+                  <CardFooter className="absolute bg-white/30 bottom-0 border-t-1 border-zinc-100/50 z-10 justify-between">
+                    <div>
+                      <p className="text-white/60">Stream data in real-time</p>
+                    </div>
+                    <Button
+                      disabled
+                      startContent={<IconDatabase className="w-4 h-4" />}
+                    >
+                      Coming Soon
+                    </Button>
+                  </CardFooter>
+                </Card>
+                <Card className="w-full h-[250px]">
+                  <CardHeader className="absolute z-10 top-1 flex-col items-start">
+                    <p className="text-tiny text-white/60 uppercase font-bold">
+                      View Demo
+                    </p>
+                    <h4 className="text-white/90 font-medium text-xl">
+                      See Zinc in action
+                    </h4>
+                  </CardHeader>
+                  <Image
+                    removeWrapper
+                    alt="Card example background"
+                    className="z-0 w-full h-full scale-125 -translate-y-6 object-cover"
+                    src={demoImage}
+                  />
+                  <CardBody></CardBody>
+                  <CardFooter className="absolute bg-white/30 bottom-0 border-t-1 border-zinc-100/50 z-10 justify-end">
+                    <Button
+                      // color="secondary"
+                      startContent={<IconPlayerPlay className="w-4 h-4" />}
+                      isDisabled={!user}
+                    >
+                      Start Demo
+                    </Button>
+                  </CardFooter>
+                </Card>
+              </div>
+            )}
           </div>
         </section>
       </main>

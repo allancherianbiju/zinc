@@ -22,7 +22,14 @@ import {
 import Navbar from "../components/navbar";
 import api from "../api";
 import ReactMarkdown from "react-markdown";
-import { IconCopy, IconCheck } from "@tabler/icons-react";
+import {
+  IconCopy,
+  IconCheck,
+  IconBrain,
+  IconCalendar,
+  IconClock,
+} from "@tabler/icons-react";
+import { IncidentTimingChart } from "../components/IncidentTimingChart";
 
 const Report = () => {
   const navigate = useNavigate();
@@ -42,7 +49,7 @@ const Report = () => {
     const fetchReportData = async () => {
       try {
         const user = JSON.parse(localStorage.getItem("user") || "{}");
-        const response = await api.get(`/report/${user.id}`);
+        const response = await api.get(`/report/${user.email}`);
         setReportData(response.data);
       } catch (error) {
         console.error("Error fetching report data:", error);
@@ -93,6 +100,22 @@ const Report = () => {
     return <div>Loading...</div>;
   }
 
+  const mostComplex = reportData.cards.most_complex || {
+    category: "N/A",
+    subcategory: "N/A",
+    u_symptom: "N/A",
+    count: 0,
+  };
+
+  const dateRange = reportData.cards.date_range || {
+    min_date: new Date().toISOString(),
+    max_date: new Date().toISOString(),
+  };
+
+  const avgResolutionTime = reportData.cards.avg_resolution_time || {
+    avg_resolution_time: 0,
+  };
+
   const sortedData = [...reportData.table_data].sort((a, b) => {
     if (!sortField) return 0;
     const aValue = a[sortField];
@@ -121,46 +144,85 @@ const Report = () => {
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <Card>
-            <CardBody>
-              <h2 className="text-xl font-semibold mb-2">
-                Most Complex Incident Type
-              </h2>
-              <p>Category: {reportData.cards.most_complex.category}</p>
-              <p>Subcategory: {reportData.cards.most_complex.subcategory}</p>
-              <p>Symptom: {reportData.cards.most_complex.u_symptom}</p>
-              <p>Count: {reportData.cards.most_complex.count}</p>
+            <CardBody className="flex flex-col">
+              <div className="flex items-center mb-2">
+                <IconBrain className="mr-2 text-primary" size={24} />
+                <h2 className="text-xl font-semibold">
+                  Most Complex Incident Group
+                </h2>
+              </div>
+              <div className="space-y-2">
+                <p>
+                  <span className="font-medium">Category:</span>{" "}
+                  <span className="text-default-500">
+                    {mostComplex.category}
+                  </span>
+                </p>
+                <p>
+                  <span className="font-medium">Subcategory:</span>{" "}
+                  <span className="text-default-500">
+                    {mostComplex.subcategory}
+                  </span>
+                </p>
+                <p>
+                  <span className="font-medium">Symptom:</span>{" "}
+                  <span className="text-default-500">
+                    {mostComplex.u_symptom}
+                  </span>
+                </p>
+                <p>
+                  <span className="font-medium">Count:</span>{" "}
+                  <span className="text-primary font-bold">
+                    {mostComplex.count}
+                  </span>
+                </p>
+              </div>
             </CardBody>
           </Card>
           <Card>
-            <CardBody>
-              <h2 className="text-xl font-semibold mb-2">Date Range</h2>
-              <p>
-                From:{" "}
-                {new Date(
-                  reportData.cards.date_range.min_date
-                ).toLocaleDateString()}
-              </p>
-              <p>
-                To:{" "}
-                {new Date(
-                  reportData.cards.date_range.max_date
-                ).toLocaleDateString()}
-              </p>
+            <CardBody className="flex flex-col">
+              <div className="flex items-center mb-2">
+                <IconCalendar className="mr-2 text-primary" size={24} />
+                <h2 className="text-xl font-semibold">Date Range</h2>
+              </div>
+              <div className="space-y-2">
+                <p>
+                  <span className="font-medium">From:</span>{" "}
+                  <span className="text-default-500">
+                    {new Date(dateRange.min_date).toLocaleDateString()}
+                  </span>
+                </p>
+                <p>
+                  <span className="font-medium">To:</span>{" "}
+                  <span className="text-default-500">
+                    {new Date(dateRange.max_date).toLocaleDateString()}
+                  </span>
+                </p>
+              </div>
             </CardBody>
           </Card>
           <Card>
-            <CardBody>
-              <h2 className="text-xl font-semibold mb-2">
-                Average Resolution Time
-              </h2>
-              <p>
-                {reportData.cards.avg_resolution_time.avg_resolution_time.toFixed(
-                  2
-                )}{" "}
-                minutes
+            <CardBody className="flex flex-col">
+              <div className="flex items-center mb-2">
+                <IconClock className="mr-2 text-primary" size={24} />
+                <h2 className="text-xl font-semibold">
+                  Average Resolution Time
+                </h2>
+              </div>
+              <p className="text-3xl font-bold text-primary">
+                {avgResolutionTime.avg_resolution_time.toFixed(2)}
+                <span className="text-lg font-normal text-default-500 ml-1">
+                  minutes
+                </span>
               </p>
             </CardBody>
           </Card>
+        </div>
+
+        <div className="mt-6">
+          {reportData?.timing_data && (
+            <IncidentTimingChart timingData={reportData.timing_data} />
+          )}
         </div>
 
         <Table aria-label="Incident data table">

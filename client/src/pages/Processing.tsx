@@ -10,7 +10,7 @@ const Processing = () => {
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("Processing...");
   const [error, setError] = useState<string | null>(null);
-  const { mapping, resolution_time_field } = location.state || {};
+  const { mapping } = location.state || {};
 
   useEffect(() => {
     const processData = async () => {
@@ -18,7 +18,6 @@ const Processing = () => {
         setProgress(10);
         const response = await api.post("/process", {
           mapping,
-          resolution_time_field,
         });
         setProgress(100);
         setStatus(response.data.message);
@@ -31,7 +30,7 @@ const Processing = () => {
     };
 
     processData();
-  }, [mapping, resolution_time_field]);
+  }, [mapping]);
 
   return (
     <div className="flex flex-col min-h-screen bg-background">
@@ -53,7 +52,10 @@ const Processing = () => {
           </Button>
         )}
         {error && (
-          <Button color="primary" onClick={() => navigate("/mapping")}>
+          <Button
+            color="primary"
+            onClick={() => navigate("/column-mapping", { state: { mapping } })}
+          >
             Back to Mapping
           </Button>
         )}
