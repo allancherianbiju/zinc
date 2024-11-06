@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Body, Res
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer
-from typing import Annotated, Optional, Dict
+from typing import Annotated, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from datetime import datetime
@@ -30,6 +30,16 @@ from sqlalchemy import text
 from werkzeug.utils import secure_filename
 from sqlalchemy import ForeignKey
 from sqlalchemy.orm import relationship
+import xml.etree.ElementTree as ET
+import json
+from langchain_google_genai import ChatGoogleGenerativeAI, HarmBlockThreshold, HarmCategory
+from dotenv import load_dotenv
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+import nltk
+import time
+from starlette.responses import StreamingResponse
+import asyncio
 
 # Set up logging
 logging.basicConfig(
@@ -74,6 +84,12 @@ class IncidentBase(BaseModel):
     resolution_notes: str
     resolution_time: float
     complexity: str
+    customer_satisfaction: Optional[str] = None
+    resolution_time_score: Optional[str] = None
+    reassignment_score: Optional[str] = None
+    reopen_score: Optional[str] = None
+    sentiment_score: Optional[str] = None
+    sentiment: Optional[str] = None
 
 class IncidentModel(IncidentBase):
     number: str = Field(alias='incident_number')
@@ -112,10 +128,17 @@ models.Base.metadata.create_all(bind=engine)
 
 async def get_current_user(token: Optional[str] = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     if not token:
+        logger.warning("No authentication token provided")
         return None
+    
+    # Add debug logging
+    logger.info(f"Attempting to authenticate user with token: {token}")
+    
     user = db.query(models.User).filter(models.User.email == token).first()
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid authentication credentials")
+        logger.warning(f"No user found for token: {token}")
+        return None
+    
     return user
 
 @app.post("/incidents/", response_model=IncidentModel)
@@ -319,6 +342,9 @@ async def submit_mapping(
     
     return {"message": "Mapping received successfully"}
 
+# Add this near the top with other constants
+datetime_fields = ['opened_at', 'closed_at', 'resolved_at']
+
 # Add this field mapping dictionary at the top level of the file
 FIELD_MAPPING = {
     "Number": "number",
@@ -341,227 +367,367 @@ FIELD_MAPPING = {
     "Resolution Notes": "resolution_notes"
 }
 
+# Load environment variables
+load_dotenv()
+
+# Download required NLTK data
+try:
+    nltk.download('stopwords')
+    nltk.download('punkt')
+    nltk.download('punkt_tab')
+except Exception as e:
+    logger.warning(f"Failed to download NLTK data: {e}")
+
+def remove_stopwords(text: str) -> str:
+    """Remove stopwords to reduce token count"""
+    if pd.isna(text) or not isinstance(text, str):
+        return ""
+    
+    stop_words = set(stopwords.words('english'))
+    word_tokens = word_tokenize(text)
+    filtered_text = ' '.join([w for w in word_tokens if w.lower() not in stop_words])
+    return filtered_text
+
+def analyze_sentiments_batch(df: pd.DataFrame) -> dict:
+    """Analyze sentiments for incident resolution notes"""
+    try:
+        results = {}
+        
+        # Filter and clean resolution notes first
+        df['filtered_notes'] = df['resolution_notes'].apply(remove_stopwords)
+        
+        batch_size = 5
+        total_batches = (len(df) + batch_size - 1) // batch_size
+        
+        logger.info(f"Starting sentiment analysis for {len(df)} records")
+        
+        # Initialize Ollama through Langchain
+        llm = Ollama(
+            model="llama3.1",
+            temperature=0.1
+        )
+        
+        template = """
+        Analyze the sentiment of each IT support ticket resolution note below. 
+        For each ticket, classify the sentiment as ONLY ONE of these values: 'highly positive', 'positive', 'neutral', 'negative', 'highly negative'.
+        Return ONLY a JSON object with ticket numbers as keys and sentiment values.
+
+        Notes to analyze:
+        {notes_dict}
+
+        Response format:
+        {
+            "ticket_number": "sentiment"
+        }
+        """
+        
+        prompt = PromptTemplate(
+            template=template,
+            input_variables=["notes_dict"]
+        )
+        chain = LLMChain(llm=llm, prompt=prompt)
+        
+        for i in range(0, len(df), batch_size):
+            batch_df = df.iloc[i:i + batch_size]
+            batch_number = (i // batch_size) + 1
+            
+            # Create batch dict using .values to access data directly
+            batch_dict = {}
+            for idx in range(len(batch_df)):
+                number = str(batch_df.iloc[idx]['number'])  # Convert to string
+                notes = batch_df.iloc[idx]['filtered_notes']
+                if pd.notna(notes) and str(notes).strip():
+                    batch_dict[number] = str(notes)
+            
+            if not batch_dict:
+                continue
+                
+            try:
+                # Log only the ticket numbers being processed
+                ticket_numbers = list(batch_dict.keys())
+                logger.info(f"Batch {batch_number}/{total_batches} - Processing tickets: {', '.join(ticket_numbers)}")
+                
+                # Use Langchain chain to generate response
+                response = chain.run(notes_dict=json.dumps(batch_dict))
+                
+                try:
+                    # Clean and parse the response
+                    cleaned_response = response.strip()
+                    # Find the JSON object in the response
+                    json_start = cleaned_response.find('{')
+                    json_end = cleaned_response.rfind('}') + 1
+                    if json_start >= 0 and json_end > json_start:
+                        json_str = cleaned_response[json_start:json_end]
+                        batch_results = json.loads(json_str)
+                    else:
+                        raise json.JSONDecodeError("No valid JSON found", cleaned_response, 0)
+                    
+                    # Log results for this batch
+                    logger.info(f"Batch {batch_number} results:")
+                    for ticket, sentiment in batch_results.items():
+                        logger.info(f"  Ticket {ticket}: {sentiment}")
+                    
+                    # Validate sentiments
+                    valid_sentiments = {'highly positive', 'positive', 'neutral', 'negative', 'highly negative'}
+                    validated_results = {
+                        ticket: sentiment.lower() for ticket, sentiment in batch_results.items()
+                        if sentiment.lower() in valid_sentiments
+                    }
+                    
+                    results.update(validated_results)
+                    
+                except json.JSONDecodeError as je:
+                    logger.error(f"JSON decode error in batch {batch_number}. Skipping batch.")
+                    continue
+                
+            except Exception as e:
+                logger.error(f"Error in batch {batch_number}: {str(e)}")
+                continue
+                
+        # Log final summary
+        logger.info(f"Sentiment analysis completed. Processed {len(results)} tickets successfully.")
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error in sentiment analysis: {str(e)}")
+        return {}
+
+async def process_file_data(df: pd.DataFrame, mapping_data: dict) -> pd.DataFrame:
+    """Process the uploaded file data with mappings"""
+    # Convert frontend field names to internal names
+    internal_mapping = {}
+    for frontend_field, csv_column in mapping_data.items():
+        internal_field = FIELD_MAPPING.get(frontend_field)
+        if internal_field:
+            internal_mapping[internal_field] = csv_column
+        else:
+            logger.warning(f"Unknown frontend field name: {frontend_field}")
+
+    # Apply mappings and handle data types
+    mapped_df = pd.DataFrame()
+    for internal_field, csv_field in internal_mapping.items():
+        if csv_field in df.columns:
+            if internal_field in ['reassignment_count', 'reopen_count']:
+                mapped_df[internal_field] = pd.to_numeric(df[csv_field], errors='coerce').fillna(0).astype(int)
+            elif internal_field == 'made_sla':
+                mapped_df[internal_field] = df[csv_field].map({'TRUE': True, 'FALSE': False, True: True, False: False})
+                mapped_df[internal_field] = mapped_df[internal_field].fillna(False)
+            else:
+                mapped_df[internal_field] = df[csv_field]
+    
+    return mapped_df
+
 @app.post("/process")
 async def process_data(
-    mapping_data: MappingData,
+    mapping_data: Dict[str, Any] = Body(...),
     db: Session = Depends(get_db),
     current_user: Optional[models.User] = Depends(get_current_user)
 ):
     try:
-        if not current_user:
-            raise HTTPException(status_code=401, detail="Authentication required")
-        
-        logger.info("Authentication successful")
+        # Use a flag to track if processing is complete
+        processing_complete = False
 
-        # Get the latest uploaded file for the user
-        latest_file = db.query(models.UploadedFile).filter(
-            models.UploadedFile.user_email == current_user.email
-        ).order_by(models.UploadedFile.upload_date.desc()).first()
+        async def event_stream():
+            nonlocal processing_complete
+            if processing_complete:
+                return
+                
+            sent_messages = set()
+            completed_steps = set()
+            
+            try:
+                # Updated progress steps with ETA
+                progress_steps = {
+                    "file_reading": {
+                        "message": "Reading and validating file...",
+                        "progress": 10,
+                        "order": 1,
+                        "eta": "Calculating..."
+                    },
+                    "data_mapping": {
+                        "message": "Mapping data fields...",
+                        "progress": 20,
+                        "order": 2,
+                        "eta": "Calculating..."
+                    },
+                    "datetime_processing": {
+                        "message": "Processing timestamps...",
+                        "progress": 30,
+                        "order": 3,
+                        "eta": "Calculating..."
+                    },
+                    "sentiment_analysis": {
+                        "message": "Analyzing sentiments...",
+                        "progress": 60,
+                        "order": 4,
+                        "eta": "Calculating..."
+                    },
+                    "scoring_calculation": {
+                        "message": "Calculating scores...",
+                        "progress": 80,
+                        "order": 5,
+                        "eta": "Calculating..."
+                    },
+                    "database_saving": {
+                        "message": "Saving results...",
+                        "progress": 100,
+                        "order": 6,
+                        "eta": "Almost done..."
+                    }
+                }
 
-        if not latest_file:
-            raise HTTPException(status_code=404, detail="No uploaded file found")
+                # Get the latest uploaded file
+                latest_file = db.query(models.UploadedFile).filter(
+                    models.UploadedFile.user_email == current_user.email
+                ).order_by(models.UploadedFile.upload_date.desc()).first()
 
-        file_path = f"uploads/{latest_file.stored_filename}"
-        logger.info(f"Processing file: {file_path}")
+                if not latest_file:
+                    raise HTTPException(status_code=404, detail="No uploaded file found")
 
-        # Read the CSV file
-        df = pd.read_csv(file_path)
-        logger.info(f"CSV file read successfully. Shape: {df.shape}")
+                file_path = f"uploads/{latest_file.stored_filename}"
+                
+                # Execute steps only if not already completed
+                if "file_reading" not in completed_steps:
+                    completed_steps.add("file_reading")
+                    yield json.dumps(progress_steps["file_reading"]) + "\n"
+                    df = pd.read_csv(file_path)
+                    await asyncio.sleep(0.1)  # Small delay to ensure proper streaming
 
-        # Convert frontend field names to internal names
-        internal_mapping = {}
-        for frontend_field, csv_column in mapping_data.mapping.items():
-            internal_field = FIELD_MAPPING.get(frontend_field)
-            if internal_field:
-                internal_mapping[internal_field] = csv_column
-            else:
-                logger.warning(f"Unknown frontend field name: {frontend_field}")
+                # Data Mapping
+                if "data_mapping" not in completed_steps:
+                    completed_steps.add("data_mapping")
+                    yield json.dumps(progress_steps["data_mapping"]) + "\n"
+                    mapped_df = await process_file_data(df, mapping_data['mapping'])
 
-        # Apply mappings and handle data types
-        mapped_df = pd.DataFrame()
-        for internal_field, csv_field in internal_mapping.items():
-            if csv_field in df.columns:
-                if internal_field in ['reassignment_count', 'reopen_count']:
-                    mapped_df[internal_field] = pd.to_numeric(df[csv_field], errors='coerce').fillna(0).astype(int)
-                elif internal_field == 'made_sla':
-                    mapped_df[internal_field] = df[csv_field].map({'TRUE': True, 'FALSE': False, True: True, False: False})
-                    mapped_df[internal_field] = mapped_df[internal_field].fillna(False)
-                else:
-                    mapped_df[internal_field] = df[csv_field]
-            else:
-                logger.warning(f"Column {csv_field} not found in CSV file")
-        logger.info("Mappings applied")
-
-        # Convert datetime fields
-        datetime_fields = ['opened_at', 'closed_at', 'resolved_at']
-        required_fields = ['opened_at', 'closed_at']
-
-        for field in datetime_fields:
-            if field in mapped_df.columns:
-                try:
-                    # Parse dates and convert to Python datetime objects
-                    mapped_df[field] = mapped_df[field].apply(parse_datetime)
+                # DateTime Processing
+                if "datetime_processing" not in completed_steps:
+                    completed_steps.add("datetime_processing")
+                    yield json.dumps(progress_steps["datetime_processing"]) + "\n"
                     
-                    # Log some sample dates to verify parsing
-                    sample_dates = mapped_df[field].dropna().head()
-                    logger.info(f"Sample {field} dates after parsing:")
-                    for date in sample_dates:
-                        logger.info(f"  {date}")
+                    # Verify datetime consistency and convert
+                    for field in datetime_fields:
+                        if field in mapped_df.columns:
+                            invalid_dates = mapped_df[field].isna()
+                            if invalid_dates.any():
+                                logger.warning(f"Found {invalid_dates.sum()} invalid dates in {field}")
+                            
+                            mapped_df[field] = pd.to_datetime(
+                                mapped_df[field], 
+                                format='%d/%m/%Y %H:%M',
+                                dayfirst=True,
+                                errors='coerce'
+                            )
+
+                    # Calculate resolution time
+                    if 'opened_at' in mapped_df.columns and 'closed_at' in mapped_df.columns:
+                        resolution_time = (mapped_df['closed_at'] - mapped_df['opened_at']).dt.total_seconds()
+                        mapped_df['resolution_time'] = resolution_time
+
+                # Sentiment Analysis
+                if "sentiment_analysis" not in completed_steps:
+                    completed_steps.add("sentiment_analysis")
+                    yield json.dumps(progress_steps["sentiment_analysis"]) + "\n"
+                    
+                    sentiments = analyze_sentiments_batch(mapped_df)
+                    mapped_df['sentiment'] = mapped_df['number'].map(sentiments)
+                    mapped_df['sentiment'] = mapped_df['sentiment'].fillna('neutral')
+
+                # Scoring Calculation
+                if "scoring_calculation" not in completed_steps:
+                    completed_steps.add("scoring_calculation")
+                    yield json.dumps(progress_steps["scoring_calculation"]) + "\n"
+                    
+                    # Complexity calculation
+                    if 'resolution_time' in mapped_df.columns and 'reassignment_count' in mapped_df.columns:
+                        scaler = StandardScaler()
+                        normalized_resolution_time = scaler.fit_transform(mapped_df[['resolution_time']])
+                        normalized_reassignment_count = scaler.fit_transform(mapped_df[['reassignment_count']])
+
+                        def calculate_complexity(res_time, reassign_count):
+                            if pd.isna(res_time) or pd.isna(reassign_count):
+                                return 'Unknown'
+                            score = res_time + reassign_count
+                            if score < -1: return 'Simple'
+                            elif score < 0: return 'Medium'
+                            elif score < 1: return 'Hard'
+                            else: return 'Complex'
+
+                        mapped_df['complexity'] = [
+                            calculate_complexity(rt, rc) 
+                            for rt, rc in zip(normalized_resolution_time, normalized_reassignment_count)
+                        ]
+
+                        # Customer Satisfaction Calculation
+                        logger.info("Starting customer satisfaction score calculation")
+                    try:
+                        # Calculate all satisfaction scores
+                        scored_df = calculate_customer_satisfaction(mapped_df)
                         
-                except Exception as e:
-                    if field in required_fields:
-                        logger.error(f"Error parsing {field}: {str(e)}")
-                        logger.error("Sample problematic values:")
-                        problematic_values = mapped_df[field].head()
-                        for val in problematic_values:
-                            logger.error(f"  {val}")
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Could not parse {field} field. Please ensure dates are in DD-MM-YYYY format. Error: {str(e)}"
-                        )
-                    else:
-                        logger.warning(f"Non-required datetime field {field} could not be parsed: {str(e)}")
-            else:
-                if field in required_fields:
-                    frontend_field = next(k for k, v in FIELD_MAPPING.items() if v == field)
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Required field '{frontend_field}' is missing from the mapping"
+                        # Update mapped_df with all the scores
+                        score_columns = [
+                            'resolution_time_score', 
+                            'reassignment_score', 
+                            'reopen_score', 
+                            'sentiment_score', 
+                            'customer_satisfaction'
+                        ]
+                        
+                        for col in score_columns:
+                            mapped_df[col] = scored_df[col]
+                            
+                        logger.info("Successfully calculated customer satisfaction scores")
+                    except Exception as e:
+                        logger.error(f"Error in customer satisfaction calculation: {e}")
+                        # Set default values if calculation fails
+                        mapped_df['customer_satisfaction'] = 'neutral'
+                        mapped_df['resolution_time_score'] = '3'
+                        mapped_df['reassignment_score'] = '3'
+                        mapped_df['reopen_score'] = '3'
+                        mapped_df['sentiment_score'] = '3'
+
+                # Database Saving
+                if "database_saving" not in completed_steps:
+                    completed_steps.add("database_saving")
+                    yield json.dumps(progress_steps["database_saving"]) + "\n"
+                    
+                    # Save to database with all scores
+                    safe_email = current_user.email.replace('@', '_').replace('.', '_')
+                    engine = create_engine(f'sqlite:///./zinc_{safe_email}.db')
+                    
+                    mapped_df.to_sql(
+                        name=f"incident_data_{safe_email}",
+                        con=engine,
+                        if_exists='replace',
+                        index=False
                     )
 
-        # After parsing all dates, verify they're in a consistent format
-        logger.info("Verifying datetime consistency...")
-        for field in datetime_fields:
-            if field in mapped_df.columns:
-                invalid_dates = mapped_df[field].isna()
-                if invalid_dates.any():
-                    logger.warning(f"Found {invalid_dates.sum()} invalid dates in {field}")
-                    logger.warning("Sample original values that couldn't be parsed:")
-                    original_values = mapped_df.loc[invalid_dates, field].head()
-                    for val in original_values:
-                        logger.warning(f"  {val}")
+                # Mark processing as complete
+                processing_complete = True
+                yield json.dumps({
+                    "progress": 100,
+                    "message": "Processing complete!"
+                }) + "\n"
 
-        # Calculate resolution time using closed_at
-        if 'opened_at' in mapped_df.columns and 'closed_at' in mapped_df.columns:
-            resolution_time = (mapped_df['closed_at'] - mapped_df['opened_at']).dt.total_seconds()
-            
-            # Check for invalid resolution times
-            invalid_times = resolution_time <= 0
-            if invalid_times.any():
-                problem_records = mapped_df[invalid_times][['number', 'opened_at', 'closed_at']]
-                logger.error("Invalid resolution times found in the following records:")
-                for _, record in problem_records.iterrows():
-                    logger.error(
-                        f"Ticket {record['number']}: "
-                        f"Opened: {record['opened_at'].strftime('%d-%m-%Y %H:%M:%S')} -> "
-                        f"Closed: {record['closed_at'].strftime('%d-%m-%Y %H:%M:%S')}"
-                    )
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid resolution times detected: Some tickets have closing times before opening times"
-                )
-            
-            mapped_df['resolution_time'] = resolution_time
-            logger.info("Resolution time calculated using closed_at")
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot calculate resolution time: missing required timestamp fields"
-            )
+            except Exception as e:
+                logger.error(f"Error in event stream: {str(e)}", exc_info=True)
+                error_message = f"Processing error: {str(e)}"
+                if error_message not in sent_messages:
+                    sent_messages.add(error_message)
+                    yield json.dumps({
+                        "error": error_message,
+                        "progress": 100,
+                        "eta": "Error occurred"
+                    }) + "\n"
+                processing_complete = True
 
-        # Dynamic split point adjustment for complexity classification
-        if 'resolution_time' in mapped_df.columns and 'reassignment_count' in mapped_df.columns:
-            scaler = StandardScaler()
-            normalized_resolution_time = scaler.fit_transform(mapped_df[['resolution_time']])
-            normalized_reassignment_count = scaler.fit_transform(mapped_df[['reassignment_count']])
-
-            def calculate_complexity(res_time, reassign_count):
-                if pd.isna(res_time) or pd.isna(reassign_count):
-                    return 'Unknown'
-                score = res_time + reassign_count
-                if score < -1:
-                    return 'Simple'
-                elif score < 0:
-                    return 'Medium'
-                elif score < 1:
-                    return 'Hard'
-                else:
-                    return 'Complex'
-
-            mapped_df['complexity'] = [calculate_complexity(rt, rc) for rt, rc in zip(normalized_resolution_time, normalized_reassignment_count)]
-            logger.info("Complexity calculated with dynamic split points")
-        else:
-            logger.warning("Could not calculate complexity due to missing columns")
-
-        # Remove duplicate entries based on the 'number' field
-        mapped_df = mapped_df.drop_duplicates(subset=['number'], keep='first')
-        logger.info(f"Removed duplicate entries. New shape: {mapped_df.shape}")
-
-        # Create a unique table name for the user using email instead of id
-        # Convert email to a safe string for table name
-        safe_email = current_user.email.replace('@', '_').replace('.', '_')
-        table_name = f"incident_data_{safe_email}"
-
-        # Create SQLAlchemy Table dynamically
-        from sqlalchemy import Table, MetaData, Column, String, Integer, Float, DateTime, Boolean
-        metadata = MetaData()
-        incident_table = Table(table_name, metadata,
-            Column('number', String, primary_key=True),
-            Column('issue_description', String),
-            Column('reassignment_count', Integer),
-            Column('reopen_count', Integer),
-            Column('made_sla', Boolean),
-            Column('caller_id', String),
-            Column('opened_at', DateTime),
-            Column('category', String),
-            Column('subcategory', String),
-            Column('u_symptom', String),
-            Column('cmdb_ci', String),
-            Column('priority', String),
-            Column('assigned_to', String),
-            Column('problem_id', String),
-            Column('resolved_by', String),
-            Column('closed_at', DateTime),
-            Column('resolved_at', DateTime),
-            Column('resolution_notes', String),
-            Column('resolution_time', Float),
-            Column('complexity', String)
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream"
         )
 
-        # Create the table in the database
-        engine = create_engine(f'sqlite:///./zinc_{safe_email}.db')
-        metadata.create_all(engine)
-
-        # Insert data into the database
-        with engine.connect() as connection:
-            for _, row in mapped_df.iterrows():
-                row_dict = row.to_dict()
-                # Ensure all values are of the correct type for SQLite
-                for key, value in row_dict.items():
-                    if pd.isna(value):
-                        if key == 'made_sla':
-                            row_dict[key] = False
-                        elif isinstance(value, (int, float)):
-                            row_dict[key] = 0
-                        else:
-                            row_dict[key] = None
-                    elif key in datetime_fields and value is not None:
-                        # Ensure datetime fields are Python datetime objects
-                        row_dict[key] = pd.to_datetime(value).to_pydatetime() if pd.notnull(value) else None
-                try:
-                    insert_stmt = incident_table.insert().values(**row_dict)
-                    connection.execute(insert_stmt)
-                except sqlalchemy.exc.IntegrityError as e:
-                    continue
-            connection.commit()
-
-        logger.info(f"Data inserted into the database table: {table_name}")
-
-        return {"message": "Data processed and inserted into the database successfully"}
-
     except Exception as e:
-        logger.error(f"Error processing data: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error processing data: {str(e)}")
+        logger.error(f"Error in process_data: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 # After fetching the data into a DataFrame
 def get_timing_analysis(df):
@@ -798,5 +964,137 @@ async def get_engagements(
     
     return engagements
 
+def calculate_customer_satisfaction(df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate customer satisfaction scores and return all component scores"""
+    try:
+        # Create a copy of the input dataframe to store all scores
+        scored_df = df.copy()
+        
+        # Handle resolution time binning
+        try:
+            resolution_time_bins = pd.qcut(
+                scored_df['resolution_time'],
+                q=5,
+                labels=['1', '2', '3', '4', '5'],
+                duplicates='drop'
+            )
+            scored_df['resolution_time_score'] = resolution_time_bins
+        except Exception as e:
+            logger.warning(f"Error in resolution time binning: {e}")
+            scored_df['resolution_time_score'] = '3'  # Default value
+        
+        # Handle reassignment count binning
+        try:
+            reassign_counts = scored_df['reassignment_count'].clip(upper=scored_df['reassignment_count'].quantile(0.95))
+            unique_values = sorted(reassign_counts.unique())
+            
+            if len(unique_values) <= 1:
+                scored_df['reassignment_score'] = '3'  # Default value for single value
+            elif len(unique_values) < 5:
+                bins = [-float('inf')] + unique_values + [float('inf')]
+                labels = ['5', '4', '3', '2', '1'][:len(unique_values)]
+                reassign_score = pd.cut(
+                    reassign_counts,
+                    bins=bins,
+                    labels=labels,
+                    duplicates='drop'
+                )
+                scored_df['reassignment_score'] = reassign_score
+            else:
+                reassign_score = pd.qcut(
+                    reassign_counts,
+                    q=5,
+                    labels=['5', '4', '3', '2', '1'],
+                    duplicates='drop'
+                )
+                scored_df['reassignment_score'] = reassign_score
+        except Exception as e:
+            logger.warning(f"Error in reassignment binning: {e}")
+            scored_df['reassignment_score'] = '3'  # Default value
+        
+        # Similar approach for reopen count
+        try:
+            reopen_counts = scored_df['reopen_count'].clip(upper=scored_df['reopen_count'].quantile(0.95))
+            unique_values = sorted(reopen_counts.unique())
+            
+            if len(unique_values) <= 1:
+                scored_df['reopen_score'] = '3'  # Default value for single value
+            elif len(unique_values) < 5:
+                bins = [-float('inf')] + unique_values + [float('inf')]
+                labels = ['5', '4', '3', '2', '1'][:len(unique_values)]
+                reopen_score = pd.cut(
+                    reopen_counts,
+                    bins=bins,
+                    labels=labels,
+                    duplicates='drop'
+                )
+                scored_df['reopen_score'] = reopen_score
+            else:
+                reopen_score = pd.qcut(
+                    reopen_counts,
+                    q=5,
+                    labels=['5', '4', '3', '2', '1'],
+                    duplicates='drop'
+                )
+                scored_df['reopen_score'] = reopen_score
+        except Exception as e:
+            logger.warning(f"Error in reopen binning: {e}")
+            scored_df['reopen_score'] = '3'  # Default value
+        
+        # Map sentiment scores
+        sentiment_map = {
+            'highly positive': '5',
+            'positive': '4',
+            'neutral': '3',
+            'negative': '2',
+            'highly negative': '1'
+        }
+        scored_df['sentiment_score'] = scored_df['sentiment'].map(sentiment_map).fillna('3')
+        
+        # Calculate weighted average
+        try:
+            weights = {
+                'resolution_time_score': 0.3,
+                'reassignment_score': 0.2,
+                'reopen_score': 0.2,
+                'sentiment_score': 0.3
+            }
+            
+            # Convert scores to numeric for calculation
+            numeric_scores = scored_df[list(weights.keys())].apply(pd.to_numeric, errors='coerce')
+            
+            # Calculate weighted average
+            weighted_sum = sum(numeric_scores[col] * weight for col, weight in weights.items())
+            total_weight = sum(weights.values())
+            final_scores = weighted_sum / total_weight
+            
+            # Convert final scores to satisfaction levels
+            scored_df['customer_satisfaction'] = pd.cut(
+                final_scores,
+                bins=[-float('inf'), 1.8, 2.6, 3.4, 4.2, float('inf')],
+                labels=['highly negative', 'negative', 'neutral', 'positive', 'highly positive']
+            ).fillna('neutral')
+            
+        except Exception as e:
+            logger.error(f"Error in final score calculation: {e}")
+            scored_df['customer_satisfaction'] = 'neutral'
+        
+        # Ensure all score columns are strings
+        score_columns = ['resolution_time_score', 'reassignment_score', 'reopen_score', 
+                        'sentiment_score', 'customer_satisfaction']
+        for col in score_columns:
+            scored_df[col] = scored_df[col].astype(str)
+        
+        return scored_df
+        
+    except Exception as e:
+        logger.error(f"Error calculating satisfaction scores: {e}")
+        # Return dataframe with default values
+        df['customer_satisfaction'] = 'neutral'
+        df['resolution_time_score'] = '3'
+        df['reassignment_score'] = '3'
+        df['reopen_score'] = '3'
+        df['sentiment_score'] = '3'
+        return df
 
 

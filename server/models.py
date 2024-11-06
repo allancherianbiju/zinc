@@ -41,3 +41,34 @@ class UploadedFile(Base):
     # Relationships
     user = relationship("User", back_populates="files", foreign_keys=[user_email])
     engagement = relationship("Engagement", back_populates="files")
+
+class Incidents(Base):
+    __tablename__ = "incidents"
+
+    number = Column(String, primary_key=True)
+    issue_description = Column(String)
+    reassignment_count = Column(Integer)
+    reopen_count = Column(Integer)
+    made_sla = Column(Boolean)
+    caller_id = Column(String)
+    opened_at = Column(DateTime)
+    category = Column(String)
+    subcategory = Column(String)
+    u_symptom = Column(String)
+    cmdb_ci = Column(String)
+    priority = Column(String)
+    assigned_to = Column(String)
+    problem_id = Column(String)
+    resolved_by = Column(String)
+    closed_at = Column(DateTime)
+    resolved_at = Column(DateTime)
+    resolution_notes = Column(String)
+    resolution_time = Column(Float)
+    complexity = Column(String)
+    # Add new score fields
+    customer_satisfaction = Column(String)
+    resolution_time_score = Column(String)
+    reassignment_score = Column(String)
+    reopen_score = Column(String)
+    sentiment_score = Column(String)
+    sentiment = Column(String)

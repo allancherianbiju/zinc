@@ -20,7 +20,13 @@ import {
   ChartLegend,
   ChartLegendContent,
 } from "@/components/ui/chart";
-import { IconGraph, IconCalendarClock } from "@tabler/icons-react";
+import {
+  IconGraph,
+  IconCalendarClock,
+  IconCalendarMonth,
+  IconCalendarWeek,
+  IconClock24,
+} from "@tabler/icons-react";
 
 type TimeUnit = "hour" | "day" | "month";
 type DisplayOption = "opened" | "closed" | "both";
@@ -78,14 +84,26 @@ export function IncidentTimingChart({ timingData }: IncidentTimingChartProps) {
               defaultSelectedKeys={["hour"]}
               startContent={<IconCalendarClock size={24} />}
             >
-              <SelectItem key="hour" value="hour">
-                Hours of the Day
+              <SelectItem
+                key="hour"
+                value="hour"
+                startContent={<IconClock24 size={24} />}
+              >
+                Hours
               </SelectItem>
-              <SelectItem key="day" value="day">
-                Days of the Week
+              <SelectItem
+                key="day"
+                value="day"
+                startContent={<IconCalendarWeek size={24} />}
+              >
+                Days
               </SelectItem>
-              <SelectItem key="month" value="month">
-                Months of the Year
+              <SelectItem
+                key="month"
+                value="month"
+                startContent={<IconCalendarMonth size={24} />}
+              >
+                Months
               </SelectItem>
             </Select>
           </div>
