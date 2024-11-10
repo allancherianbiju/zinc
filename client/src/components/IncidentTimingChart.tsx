@@ -42,11 +42,11 @@ interface IncidentTimingChartProps {
 const chartConfig = {
   opened: {
     label: "Incidents Opened",
-    color: "var(--chart-opened)",
+    color: "hsl(var(--chart-1))",
   },
   closed: {
     label: "Incidents Closed",
-    color: "var(--chart-closed)",
+    color: "hsl(var(--chart-2))",
   },
 };
 

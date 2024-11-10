@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Card,
@@ -41,6 +41,9 @@ import {
 } from "@tabler/icons-react";
 import { IncidentTimingChart } from "../components/IncidentTimingChart";
 import { CustomerSatisfactionChart } from "../components/CustomerSatisfactionChart";
+import Particles, { initParticlesEngine } from "@tsparticles/react";
+import { loadSlim } from "@tsparticles/slim";
+import type { Engine } from "@tsparticles/engine";
 
 type TimeUnit = "minutes" | "hours" | "days" | "seconds";
 
@@ -66,6 +69,7 @@ const Report = () => {
   const [timeUnit, setTimeUnit] = useState<TimeUnit>("minutes");
   const [showPositiveGroups, setShowPositiveGroups] = useState(false);
   const [showLeastComplex, setShowLeastComplex] = useState(false);
+  const [init, setInit] = useState(false);
 
   const { isOpen, onOpen, onClose } = useDisclosure();
   const {
@@ -111,6 +115,56 @@ const Report = () => {
 
     fetchReportData();
   }, [navigate]);
+
+  useEffect(() => {
+    initParticlesEngine(async (engine: Engine) => {
+      await loadSlim(engine);
+    }).then(() => {
+      setInit(true);
+    });
+  }, []);
+
+  const particlesOptions = useMemo(
+    () => ({
+      background: {
+        color: {
+          value: "transparent",
+        },
+      },
+      fpsLimit: 60,
+      particles: {
+        color: {
+          value: "#ffffff",
+        },
+        links: {
+          color: "#ffffff",
+          distance: 150,
+          enable: true,
+          opacity: 0.2,
+          width: 1,
+        },
+        move: {
+          enable: true,
+          speed: 1,
+        },
+        number: {
+          density: {
+            enable: true,
+            area: 800,
+          },
+          value: 50,
+        },
+        opacity: {
+          value: 0.2,
+        },
+        size: {
+          value: { min: 1, max: 3 },
+        },
+      },
+      detectRetina: true,
+    }),
+    []
+  );
 
   const handleOpenModal = (row: any) => {
     setSelectedRow(row);
@@ -664,8 +718,17 @@ const Report = () => {
           </ModalContent>
         </Modal>
 
-        <Card className="mb-6 bg-background">
-          <CardBody className="flex flex-col items-center py-8">
+        <Card className="mb-6 bg-background relative overflow-hidden">
+          <div className="absolute inset-0">
+            {init && (
+              <Particles
+                id="scoreCardParticles"
+                options={particlesOptions}
+                className="absolute inset-0"
+              />
+            )}
+          </div>
+          <CardBody className="flex flex-col items-center py-8 relative z-10">
             <h2 className="text-xl font-semibold mb-4">
               Overall Performance Score
             </h2>

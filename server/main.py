@@ -399,7 +399,7 @@ async def analyze_sentiments_batch(df: pd.DataFrame) -> dict:
         try:
             llm = Ollama(
                 # model="llama3.1",
-                model="phi3",
+                model="phi3.5",
                 temperature=0.1,
                 num_gpu=1,
                 system="You are a sentiment analyzer. Respond with ONLY ONE WORD from these options: highly_positive, positive, neutral, negative, highly_negative."
@@ -1201,7 +1201,7 @@ async def generate_sop(data: dict):
             
         logger.info("Initializing Ollama LLM")
         try:
-            llm = Ollama(model="llama3.1")
+            llm = Ollama(model="phi3.5")
             logger.info("Successfully initialized Ollama LLM")
         except Exception as llm_error:
             logger.error(f"Failed to initialize Ollama LLM: {str(llm_error)}")

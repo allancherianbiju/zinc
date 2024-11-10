@@ -1,13 +1,11 @@
 import React from "react";
 import {
-  PieChart,
-  Pie,
-  XAxis,
-  YAxis,
-  CartesianGrid,
+  RadarChart,
+  Radar,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis,
   ResponsiveContainer,
-  Cell,
-  Label,
 } from "recharts";
 import { Card, CardBody, CardHeader } from "@nextui-org/react";
 import { IconMoodHappy } from "@tabler/icons-react";
@@ -21,7 +19,7 @@ import {
 
 interface SatisfactionData {
   satisfaction: string;
-  count: number;
+  value: number;
   fill: string;
 }
 
@@ -55,77 +53,44 @@ const chartConfig = {
 export const CustomerSatisfactionChart: React.FC<Props> = ({
   sentimentData,
 }) => {
-  const data: SatisfactionData[] = Object.entries(sentimentData).map(
-    ([satisfaction, count]) => ({
-      satisfaction: satisfaction
-        .split("_")
-        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-        .join(" "),
-      count,
-      fill: chartConfig[satisfaction.toLowerCase() as keyof typeof chartConfig]
-        .color,
-    })
-  );
+  const data = Object.entries(sentimentData).map(([satisfaction, count]) => ({
+    satisfaction: satisfaction
+      .split("_")
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" "),
+    value: count,
+    fill: chartConfig[satisfaction.toLowerCase() as keyof typeof chartConfig]
+      .color,
+  }));
 
   const totalResponses = React.useMemo(() => {
-    return data.reduce((acc, curr) => acc + curr.count, 0);
+    return data.reduce((acc, curr) => acc + curr.value, 0);
   }, [data]);
 
   return (
     <Card className="w-full mb-6">
       <CardHeader>
         <IconMoodHappy className="mr-2 text-primary" size={24} />
-        <h2 className="text-xl font-semibold">
-          Customer Satisfaction Distribution
-        </h2>
+        <h2 className="text-xl font-semibold">Customer Satisfaction</h2>
       </CardHeader>
       <CardBody>
-        <ChartContainer config={chartConfig} className="pt-2 h-[300px]">
+        <ChartContainer config={chartConfig} className="pt-2 h-[400px]">
           <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <ChartTooltip
-                cursor={false}
-                content={<ChartTooltipContent hideLabel />}
+            <RadarChart data={data} cx="50%" cy="50%">
+              <PolarGrid />
+              <PolarAngleAxis
+                dataKey="satisfaction"
+                tick={{ fill: "currentcolor" }}
               />
-              <Pie
-                data={data}
-                dataKey="count"
-                nameKey="satisfaction"
-                innerRadius={60}
-                strokeWidth={5}
-              >
-                <Label
-                  content={({ viewBox }) => {
-                    if (viewBox && "cx" in viewBox && "cy" in viewBox) {
-                      return (
-                        <text
-                          x={viewBox.cx}
-                          y={viewBox.cy}
-                          textAnchor="middle"
-                          dominantBaseline="middle"
-                        >
-                          <tspan
-                            x={viewBox.cx}
-                            y={viewBox.cy}
-                            className="fill-foreground text-3xl font-bold"
-                          >
-                            {totalResponses.toLocaleString()}
-                          </tspan>
-                          <tspan
-                            x={viewBox.cx}
-                            y={(viewBox.cy || 0) + 24}
-                            className="fill-muted-foreground"
-                          >
-                            Responses
-                          </tspan>
-                        </text>
-                      );
-                    }
-                  }}
-                />
-              </Pie>
-              <ChartLegend content={<ChartLegendContent />} />
-            </PieChart>
+              <ChartTooltip content={<ChartTooltipContent />} />
+              <Radar
+                name="Incidents"
+                dataKey="value"
+                stroke="hsl(var(--chart-1))"
+                fill="hsl(var(--chart-1))"
+                fillOpacity={0.2}
+              />
+            </RadarChart>
           </ResponsiveContainer>
         </ChartContainer>
       </CardBody>
