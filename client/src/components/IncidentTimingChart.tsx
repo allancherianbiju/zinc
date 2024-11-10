@@ -70,7 +70,7 @@ export function IncidentTimingChart({ timingData }: IncidentTimingChartProps) {
   const chartData = getChartData();
 
   return (
-    <Card className="w-[50vw] mb-6">
+    <Card className="w-full mb-6">
       <CardHeader>
         <IconGraph className="mr-2 text-primary" size={24} />
         <h2 className="text-xl font-semibold">Incident Timing</h2>

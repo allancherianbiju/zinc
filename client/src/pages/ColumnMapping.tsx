@@ -15,6 +15,10 @@ import {
 import { toast } from "sonner";
 
 const ColumnMapping = () => {
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, []);
+
   const navigate = useNavigate();
   const location = useLocation();
   const { fileData } = location.state || {};

@@ -19,7 +19,7 @@ import axios from "axios";
 import { toast } from "sonner";
 import dataImage from "./assets/pexels-pixabay-210607.jpg";
 import connectImage from "./assets/pexels-cookiecutter-1148820.jpg";
-import demoImage from "./assets/pexels-energepic-com-27411-159888.jpg";
+import reportImage from "./assets/pexels-energepic-com-27411-159888.jpg";
 
 import {
   Button,
@@ -65,6 +65,11 @@ type Engagement = {
   userId: string;
 };
 
+type Report = {
+  id: string;
+  engagementId: string;
+};
+
 export default function Component() {
   const { isOpen, onOpen, onOpenChange } = useDisclosure();
   const [isLoading, setIsLoading] = useState(false);
@@ -80,6 +85,9 @@ export default function Component() {
   >("new");
   const [engagementName, setEngagementName] = useState("");
   const [existingEngagementId, setExistingEngagementId] = useState("");
+  const [report, setReport] = useState<Report | null>(null);
+  const [hasReport, setHasReport] = useState<boolean>(false);
+  const [isCheckingReport, setIsCheckingReport] = useState<boolean>(true);
 
   useEffect(() => {
     const storedUser = localStorage.getItem("user");
@@ -107,6 +115,41 @@ export default function Component() {
       }
     };
     fetchEngagements();
+  }, [user]);
+
+  useEffect(() => {
+    const fetchReport = async () => {
+      if (user) {
+        try {
+          const response = await api.get("/report");
+          setReport(response.data);
+        } catch (error) {
+          console.error("Failed to fetch report:", error);
+        }
+      }
+    };
+    fetchReport();
+  }, [user]);
+
+  useEffect(() => {
+    const checkReport = async () => {
+      if (user) {
+        try {
+          const response = await api.get(`/report/${user.email}`);
+          setHasReport(response.data.hasReport);
+        } catch (error) {
+          console.error("Error checking report:", error);
+          setHasReport(false);
+        } finally {
+          setIsCheckingReport(false);
+        }
+      } else {
+        setHasReport(false);
+        setIsCheckingReport(false);
+      }
+    };
+
+    checkReport();
   }, [user]);
 
   const login = useGoogleLogin({
@@ -145,11 +188,21 @@ export default function Component() {
         formData.append("file", file);
       }
       formData.append("engagement_type", selectedEngagement);
+
+      let engagementData;
       if (selectedEngagement === "new") {
         formData.append("engagement_name", engagementName);
+        engagementData = { name: engagementName };
       } else {
         formData.append("engagement_id", existingEngagementId);
+        const selectedEngagement = engagements.find(
+          (e) => e.id === existingEngagementId
+        );
+        engagementData = { name: selectedEngagement?.name };
       }
+
+      // Store the current engagement in localStorage
+      localStorage.setItem("currentEngagement", JSON.stringify(engagementData));
 
       const response = await api.post("/upload", formData, {
         headers: {
@@ -468,6 +521,45 @@ export default function Component() {
                     </Modal>
                   </CardFooter>
                 </Card>
+
+                <Card className="w-full h-[250px]">
+                  <CardHeader className="absolute z-10 top-1 flex-col items-start">
+                    <p className="text-tiny text-white/60 uppercase font-bold">
+                      View Report
+                    </p>
+                    <h4 className="text-white/90 font-medium text-xl">
+                      Review your analysis
+                    </h4>
+                  </CardHeader>
+                  <Image
+                    removeWrapper
+                    alt="Card example background"
+                    className="z-0 w-full h-full scale-125 -translate-y-6 object-cover"
+                    src={reportImage}
+                  />
+                  <CardBody></CardBody>
+                  <CardFooter className="absolute bg-white/30 bottom-0 border-t-1 border-zinc-100/50 z-10 justify-between">
+                    <div>
+                      <p className="text-white/60">
+                        {!user
+                          ? "Sign in to view reports"
+                          : isCheckingReport
+                          ? "Checking report status..."
+                          : hasReport
+                          ? "View your generated report"
+                          : "Upload data to generate a report"}
+                      </p>
+                    </div>
+                    <Button
+                      startContent={<IconPlayerPlay className="w-4 h-4" />}
+                      isDisabled={!user || !hasReport}
+                      isLoading={isCheckingReport}
+                      onPress={() => navigate("/report")}
+                    >
+                      View Report
+                    </Button>
+                  </CardFooter>
+                </Card>
                 <Card isFooterBlurred className="w-full h-[250px]">
                   <CardHeader className="absolute z-10 top-1 flex-col items-start">
                     <p className="text-tiny text-white/60 uppercase font-bold">
@@ -493,32 +585,6 @@ export default function Component() {
                       startContent={<IconDatabase className="w-4 h-4" />}
                     >
                       Coming Soon
-                    </Button>
-                  </CardFooter>
-                </Card>
-                <Card className="w-full h-[250px]">
-                  <CardHeader className="absolute z-10 top-1 flex-col items-start">
-                    <p className="text-tiny text-white/60 uppercase font-bold">
-                      View Demo
-                    </p>
-                    <h4 className="text-white/90 font-medium text-xl">
-                      See Zinc in action
-                    </h4>
-                  </CardHeader>
-                  <Image
-                    removeWrapper
-                    alt="Card example background"
-                    className="z-0 w-full h-full scale-125 -translate-y-6 object-cover"
-                    src={demoImage}
-                  />
-                  <CardBody></CardBody>
-                  <CardFooter className="absolute bg-white/30 bottom-0 border-t-1 border-zinc-100/50 z-10 justify-end">
-                    <Button
-                      // color="secondary"
-                      startContent={<IconPlayerPlay className="w-4 h-4" />}
-                      isDisabled={!user}
-                    >
-                      Start Demo
                     </Button>
                   </CardFooter>
                 </Card>

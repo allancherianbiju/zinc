@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   Card,
@@ -10,16 +10,7 @@ import {
 } from "@nextui-org/react";
 import { IconTable, IconColumns, IconUser } from "@tabler/icons-react";
 import Navbar from "./components/navbar";
-import {
-  Bar,
-  BarChart,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from "recharts";
+
 import {
   Table,
   TableHeader,
@@ -94,6 +85,10 @@ const DATA_TYPE_ORDER: Record<DataType, number> = {
 };
 
 export default function Preview() {
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, []);
+
   const location = useLocation();
   const navigate = useNavigate();
   const { fileData } = location.state || {};

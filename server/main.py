@@ -23,7 +23,8 @@ import logging
 from sklearn.preprocessing import StandardScaler
 import sqlalchemy
 from sqlalchemy import func, desc
-from langchain.llms import Ollama
+from langchain_community.llms import Ollama
+from langchain_core.messages import HumanMessage
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
 from sqlalchemy import text
@@ -388,103 +389,82 @@ def remove_stopwords(text: str) -> str:
     filtered_text = ' '.join([w for w in word_tokens if w.lower() not in stop_words])
     return filtered_text
 
-def analyze_sentiments_batch(df: pd.DataFrame) -> dict:
-    """Analyze sentiments for incident resolution notes"""
+async def analyze_sentiments_batch(df: pd.DataFrame) -> dict:
+    """Analyze sentiments for incident resolution notes asynchronously"""
     try:
         results = {}
-        
-        # Filter and clean resolution notes first
         df['filtered_notes'] = df['resolution_notes'].apply(remove_stopwords)
-        
-        batch_size = 5
-        total_batches = (len(df) + batch_size - 1) // batch_size
-        
         logger.info(f"Starting sentiment analysis for {len(df)} records")
         
-        # Initialize Ollama through Langchain
-        llm = Ollama(
-            model="llama3.1",
-            temperature=0.1
-        )
-        
-        template = """
-        Analyze the sentiment of each IT support ticket resolution note below. 
-        For each ticket, classify the sentiment as ONLY ONE of these values: 'highly positive', 'positive', 'neutral', 'negative', 'highly negative'.
-        Return ONLY a JSON object with ticket numbers as keys and sentiment values.
+        try:
+            llm = Ollama(
+                # model="llama3.1",
+                model="phi3",
+                temperature=0.1,
+                num_gpu=1,
+                system="You are a sentiment analyzer. Respond with ONLY ONE WORD from these options: highly_positive, positive, neutral, negative, highly_negative."
+            )
+            logger.info("Successfully initialized Ollama LLM")
+        except Exception as llm_error:
+            logger.error(f"Failed to initialize Ollama LLM: {str(llm_error)}")
+            return {}
 
-        Notes to analyze:
-        {notes_dict}
-
-        Response format:
-        {
-            "ticket_number": "sentiment"
-        }
-        """
+        chunk_size = 50
         
-        prompt = PromptTemplate(
-            template=template,
-            input_variables=["notes_dict"]
-        )
-        chain = LLMChain(llm=llm, prompt=prompt)
-        
-        for i in range(0, len(df), batch_size):
-            batch_df = df.iloc[i:i + batch_size]
-            batch_number = (i // batch_size) + 1
-            
-            # Create batch dict using .values to access data directly
-            batch_dict = {}
-            for idx in range(len(batch_df)):
-                number = str(batch_df.iloc[idx]['number'])  # Convert to string
-                notes = batch_df.iloc[idx]['filtered_notes']
-                if pd.notna(notes) and str(notes).strip():
-                    batch_dict[number] = str(notes)
-            
-            if not batch_dict:
-                continue
-                
+        async def process_row(row):
             try:
-                # Log only the ticket numbers being processed
-                ticket_numbers = list(batch_dict.keys())
-                logger.info(f"Batch {batch_number}/{total_batches} - Processing tickets: {', '.join(ticket_numbers)}")
+                number = str(row['number'])
+                notes = row['filtered_notes']
                 
-                # Use Langchain chain to generate response
-                response = chain.run(notes_dict=json.dumps(batch_dict))
+                if pd.isna(notes) or not str(notes).strip():
+                    return number, 'neutral'
+                
+                prompt = f"""Analyze this IT support ticket resolution note sentiment. Respond with ONLY ONE WORD from: highly_positive, positive, neutral, negative, highly_negative.
+
+                Note: {notes}
+
+                Sentiment:"""
                 
                 try:
-                    # Clean and parse the response
-                    cleaned_response = response.strip()
-                    # Find the JSON object in the response
-                    json_start = cleaned_response.find('{')
-                    json_end = cleaned_response.rfind('}') + 1
-                    if json_start >= 0 and json_end > json_start:
-                        json_str = cleaned_response[json_start:json_end]
-                        batch_results = json.loads(json_str)
-                    else:
-                        raise json.JSONDecodeError("No valid JSON found", cleaned_response, 0)
+                    response = await llm.ainvoke(prompt)
+                    sentiment = str(response).strip().lower()
                     
-                    # Log results for this batch
-                    logger.info(f"Batch {batch_number} results:")
-                    for ticket, sentiment in batch_results.items():
-                        logger.info(f"  Ticket {ticket}: {sentiment}")
-                    
-                    # Validate sentiments
+                    # Map underscores to spaces and validate
+                    sentiment = sentiment.replace('_', ' ')
                     valid_sentiments = {'highly positive', 'positive', 'neutral', 'negative', 'highly negative'}
-                    validated_results = {
-                        ticket: sentiment.lower() for ticket, sentiment in batch_results.items()
-                        if sentiment.lower() in valid_sentiments
-                    }
                     
-                    results.update(validated_results)
+                    if sentiment not in valid_sentiments:
+                        logger.warning(f"Invalid sentiment '{sentiment}' for ticket {number}, defaulting to neutral")
+                        sentiment = 'neutral'
                     
-                except json.JSONDecodeError as je:
-                    logger.error(f"JSON decode error in batch {batch_number}. Skipping batch.")
-                    continue
+                    return number, sentiment
+                    
+                except Exception as msg_error:
+                    logger.error(f"Error processing message for ticket {number}: {str(msg_error)}")
+                    return number, 'neutral'
                 
             except Exception as e:
-                logger.error(f"Error in batch {batch_number}: {str(e)}")
-                continue
+                logger.error(f"Error processing row: {str(e)}")
+                return number if 'number' in locals() else 'unknown', 'neutral'
+
+        # Process in chunks
+        for i in range(0, len(df), chunk_size):
+            chunk_df = df.iloc[i:i + chunk_size]
+            chunk_number = (i // chunk_size) + 1
+            total_chunks = (len(df) + chunk_size - 1) // chunk_size
+            
+            logger.info(f"Processing chunk {chunk_number}/{total_chunks}")
+            
+            try:
+                tasks = [process_row(row) for _, row in chunk_df.iterrows()]
+                chunk_results = await asyncio.gather(*tasks)
+                results.update(dict(chunk_results))
+                logger.info(f"Completed chunk {chunk_number}/{total_chunks}")
                 
-        # Log final summary
+            except Exception as chunk_error:
+                logger.error(f"Error processing chunk {chunk_number}: {str(chunk_error)}")
+                continue
+            
         logger.info(f"Sentiment analysis completed. Processed {len(results)} tickets successfully.")
         return results
         
@@ -524,7 +504,6 @@ async def process_data(
     current_user: Optional[models.User] = Depends(get_current_user)
 ):
     try:
-        # Use a flag to track if processing is complete
         processing_complete = False
 
         async def event_stream():
@@ -628,8 +607,9 @@ async def process_data(
                     completed_steps.add("sentiment_analysis")
                     yield json.dumps(progress_steps["sentiment_analysis"]) + "\n"
                     
-                    sentiments = analyze_sentiments_batch(mapped_df)
-                    mapped_df['sentiment'] = mapped_df['number'].map(sentiments)
+                    # Await the sentiment analysis results
+                    sentiments = await analyze_sentiments_batch(mapped_df)
+                    mapped_df['sentiment'] = mapped_df['number'].map(lambda x: sentiments.get(x, 'neutral'))
                     mapped_df['sentiment'] = mapped_df['sentiment'].fillna('neutral')
 
                 # Scoring Calculation
@@ -794,6 +774,237 @@ def safe_dict(obj):
         return None
     return obj
 
+def calculate_overall_score(df: pd.DataFrame) -> float:
+    """Calculate overall performance score from 0-100"""
+    try:
+        logger.info(f"Starting overall score calculation with DataFrame shape: {df.shape}")
+        
+        # Log initial data types
+        logger.info("Column dtypes:")
+        for col in df.columns:
+            logger.info(f"{col}: {df[col].dtype}")
+        
+        # Convert scores to numeric values
+        score_columns = ['resolution_time_score', 'reassignment_score', 
+                        'reopen_score', 'sentiment_score']
+        
+        # Log presence of required columns
+        missing_columns = [col for col in score_columns + ['made_sla'] if col not in df.columns]
+        if missing_columns:
+            logger.error(f"Missing required columns: {missing_columns}")
+            return 50.0
+
+        # Log sample of score data before conversion
+        logger.info("Sample of score data before conversion:")
+        logger.info(df[score_columns].head().to_dict())
+        
+        numeric_scores = df[score_columns].apply(pd.to_numeric, errors='coerce')
+        
+        # Log any conversion issues
+        null_counts = numeric_scores.isnull().sum()
+        logger.info(f"Null counts after numeric conversion: {null_counts.to_dict()}")
+        
+        # Calculate base score (0-5 scale)
+        weights = {
+            'resolution_time_score': 0.3,
+            'reassignment_score': 0.2,
+            'reopen_score': 0.2,
+            'sentiment_score': 0.3
+        }
+        
+        # Log weighted calculation steps
+        weighted_scores = sum(numeric_scores[col] * weight 
+                            for col, weight in weights.items())
+        logger.info(f"Weighted scores summary: mean={weighted_scores.mean()}, min={weighted_scores.min()}, max={weighted_scores.max()}")
+        
+        base_score = weighted_scores / sum(weights.values())
+        logger.info(f"Base score summary: mean={base_score.mean()}, min={base_score.min()}, max={base_score.max()}")
+        
+        # Calculate SLA compliance percentage with explicit type checking
+        logger.info("made_sla column info:")
+        logger.info(f"made_sla dtype: {df['made_sla'].dtype}")
+        logger.info(f"made_sla unique values: {df['made_sla'].unique()}")
+        
+        # Convert made_sla to numeric explicitly
+        try:
+            if df['made_sla'].dtype == bool:
+                sla_numeric = df['made_sla'].astype(int)
+            else:
+                # Handle string 'True'/'False' or other cases
+                sla_numeric = df['made_sla'].map({'True': 1, 'FALSE': 0, True: 1, False: 0})
+            
+            sla_compliance = sla_numeric.mean() * 100
+            logger.info(f"SLA compliance calculated: {sla_compliance}")
+            
+        except Exception as sla_error:
+            logger.error(f"Error in SLA calculation: {str(sla_error)}")
+            logger.error(f"made_sla sample data: {df['made_sla'].head()}")
+            sla_compliance = 50.0  # Default value
+        
+        # Calculate final score
+        final_score = (((base_score.mean() - 1) / 4) * 100 * 0.7) + (sla_compliance * 0.3)
+        logger.info(f"Final score before clamping: {final_score}")
+        
+        # Ensure score is between 0 and 100
+        final_score = float(max(0, min(100, final_score)))
+        logger.info(f"Final clamped score: {final_score}")
+        
+        return final_score
+        
+    except Exception as e:
+        logger.error(f"Error calculating overall score: {str(e)}")
+        logger.error("Full traceback:", exc_info=True)
+        return 50.0  # Return middle score on error
+
+def generate_actionable_insights(df: pd.DataFrame) -> list:
+    """Generate actionable insights from incident data."""
+    insights = []
+    
+    try:
+        logger.info("Starting actionable insights generation")
+        logger.info(f"Input DataFrame shape: {df.shape}")
+        
+        # Log column names and data types
+        logger.info("DataFrame columns and types:")
+        for col in df.columns:
+            logger.info(f"{col}: {df[col].dtype}")
+
+        # 1. Resolution Time Analysis
+        logger.info("Analyzing resolution times...")
+        high_resolution_incidents = df[df['resolution_time'] > df['resolution_time'].mean() * 1.5]
+        logger.info(f"Found {len(high_resolution_incidents)} high resolution time incidents")
+        
+        if not high_resolution_incidents.empty:
+            common_category = high_resolution_incidents['category'].mode()[0]
+            avg_time = high_resolution_incidents['resolution_time'].mean() / 60  # minutes
+            logger.info(f"High resolution time category: {common_category}, avg time: {avg_time:.1f} minutes")
+            
+            insights.append({
+                "category": "Resolution Time",
+                "metric": "Average Resolution Time",
+                "value": f"{avg_time:.1f} minutes",
+                "trend": "up",
+                "impact": "high",
+                "recommendation": f"Focus on optimizing resolution time for {common_category} incidents. Consider creating standardized response procedures or additional training for this category."
+            })
+
+        # 2. Reassignment Pattern Analysis
+        logger.info("Analyzing reassignment patterns...")
+        high_reassign = df[df['reassignment_count'] > 2]
+        if not high_reassign.empty:
+            problem_subcategory = high_reassign['subcategory'].mode()[0]
+            reassign_rate = (len(high_reassign) / len(df)) * 100
+            logger.info(f"High reassignment rate: {reassign_rate:.1f}% in {problem_subcategory}")
+            
+            insights.append({
+                "category": "Incident Routing",
+                "metric": "High Reassignment Rate",
+                "value": f"{reassign_rate:.1f}%",
+                "trend": "up",
+                "impact": "medium",
+                "recommendation": f"High reassignment rate in {problem_subcategory}. Consider reviewing routing rules and team expertise mapping."
+            })
+
+        # 3. Customer Satisfaction Trends
+        logger.info("Analyzing customer satisfaction...")
+        negative_satisfaction = df[df['customer_satisfaction'].isin(['negative', 'highly negative'])]
+        if not negative_satisfaction.empty:
+            problem_symptom = negative_satisfaction['u_symptom'].mode()[0]
+            negative_rate = (len(negative_satisfaction) / len(df)) * 100
+            logger.info(f"Negative satisfaction rate: {negative_rate:.1f}% for {problem_symptom}")
+            
+            insights.append({
+                "category": "Customer Satisfaction",
+                "metric": "Negative Feedback Rate",
+                "value": f"{negative_rate:.1f}%",
+                "trend": "up",
+                "impact": "high",
+                "recommendation": f"High negative satisfaction related to '{problem_symptom}'. Review customer feedback and implement targeted improvements."
+            })
+
+        # 4. SLA Compliance
+        logger.info("Analyzing SLA compliance...")
+        # Convert made_sla to boolean (0 = False, 1 = True)
+        sla_missed = df[df['made_sla'] == 0]
+        if not sla_missed.empty:
+            sla_category = sla_missed['category'].mode()[0]
+            sla_miss_rate = (len(sla_missed) / len(df)) * 100
+            logger.info(f"SLA miss rate: {sla_miss_rate:.1f}% in {sla_category}")
+            
+            insights.append({
+                "category": "SLA Compliance",
+                "metric": "SLA Miss Rate",
+                "value": f"{sla_miss_rate:.1f}%",
+                "trend": "up",
+                "impact": "high",
+                "recommendation": f"SLA breaches concentrated in {sla_category}. Review SLA thresholds and resource allocation."
+            })
+
+        # 5. Complexity Distribution
+        logger.info("Analyzing complexity distribution...")
+        complex_incidents = df[df['complexity'] == 'Complex']
+        if not complex_incidents.empty:
+            complex_category = complex_incidents['category'].mode()[0]
+            complex_rate = (len(complex_incidents) / len(df)) * 100
+            logger.info(f"Complex incidents rate: {complex_rate:.1f}% in {complex_category}")
+            
+            insights.append({
+                "category": "Incident Complexity",
+                "metric": "Complex Incidents Rate",
+                "value": f"{complex_rate:.1f}%",
+                "trend": "up",
+                "impact": "medium",
+                "recommendation": f"High concentration of complex incidents in {complex_category}. Consider specialized training and knowledge base improvements."
+            })
+
+        # 6. Workload Distribution Analysis
+        logger.info("Analyzing workload distribution...")
+        resolver_counts = df['resolved_by'].value_counts()
+        avg_workload = resolver_counts.mean()
+        high_workload_threshold = avg_workload * 1.5
+        
+        high_workload_resolvers = resolver_counts[resolver_counts > high_workload_threshold]
+        
+        if not high_workload_resolvers.empty:
+            most_loaded_resolver = high_workload_resolvers.index[0]
+            incident_count = high_workload_resolvers.iloc[0]
+            workload_ratio = (incident_count / avg_workload)
+            
+            logger.info(f"Found {len(high_workload_resolvers)} resolvers with high workload")
+            logger.info(f"Most loaded resolver: {most_loaded_resolver} with {incident_count} incidents")
+            logger.info(f"Average workload: {avg_workload:.1f} incidents")
+            
+            # Get the most common category for this resolver
+            resolver_incidents = df[df['resolved_by'] == most_loaded_resolver]
+            common_category = resolver_incidents['category'].mode()[0]
+            
+            insights.append({
+                "category": "Workload Distribution",
+                "metric": "Resolver Workload Ratio",
+                "value": f"{workload_ratio:.1f}x average",
+                "trend": "up",
+                "impact": "high" if workload_ratio > 2 else "medium",
+                "recommendation": (
+                    f"High incident concentration for resolver '{most_loaded_resolver}' "
+                    f"({incident_count:.0f} incidents, {workload_ratio:.1f}x average load), "
+                    f"particularly in '{common_category}'. Consider workload redistribution "
+                    "or additional training for other team members in these areas."
+                )
+            })
+
+        logger.info(f"Generated {len(insights)} actionable insights")
+        logger.info("Sample insights:")
+        for idx, insight in enumerate(insights):
+            logger.info(f"Insight {idx + 1}:")
+            logger.info(json.dumps(insight, indent=2))
+        
+        return insights
+        
+    except Exception as e:
+        logger.error(f"Error generating insights: {str(e)}")
+        logger.error("Full traceback:", exc_info=True)
+        return []
+
 @app.get("/report/{user_email}")
 async def get_report(
     user_email: str, 
@@ -814,6 +1025,11 @@ async def get_report(
             
             # Fetch all incident data into a DataFrame
             df = pd.read_sql(f"SELECT * FROM {table_name}", connection)
+
+            # Generate insights with logging
+            logger.info("Generating actionable insights...")
+            insights = generate_actionable_insights(df)
+            logger.info(f"Generated {len(insights)} insights")
             
             # Calculate card data
             # Most complex incidents - group by category, subcategory, and symptom
@@ -880,15 +1096,84 @@ async def get_report(
                 Sample Resolution: {row['resolution_notes'][:100]}...
                 """)
 
+            # Calculate overall score
+            overall_score = calculate_overall_score(df)
+            
+            # Get total incidents count
+            total_incidents = len(df)
+
+            # Get satisfaction counts for positive/negative groups
+            satisfaction_counts = {
+                'negative': len(df[df['customer_satisfaction'].isin(['negative', 'highly negative'])]),
+                'positive': len(df[df['customer_satisfaction'].isin(['positive', 'highly positive'])])
+            }
+
+            # Get most negative incident group
+            negative_group = df[df['customer_satisfaction'].isin(['negative', 'highly negative'])].groupby(
+                ['category', 'subcategory', 'u_symptom']
+            ).size().reset_index(name='count')
+            most_negative = negative_group.nlargest(1, 'count').to_dict('records')[0] if not negative_group.empty else {
+                'category': 'N/A',
+                'subcategory': 'N/A',
+                'u_symptom': 'N/A',
+                'count': 0
+            }
+
+            # Get most positive incident group
+            positive_group = df[df['customer_satisfaction'].isin(['positive', 'highly positive'])].groupby(
+                ['category', 'subcategory', 'u_symptom']
+            ).size().reset_index(name='count')
+            most_positive = positive_group.nlargest(1, 'count').to_dict('records')[0] if not positive_group.empty else {
+                'category': 'N/A',
+                'subcategory': 'N/A',
+                'u_symptom': 'N/A',
+                'count': 0
+            }
+
+            # Get least complex incident group
+            least_complex = df[df['complexity'] == 'Simple'].groupby(
+                ['category', 'subcategory', 'u_symptom']
+            ).size().reset_index(name='count')
+            least_complex = least_complex.nlargest(1, 'count').to_dict('records')[0] if not least_complex.empty else {
+                'category': 'N/A',
+                'subcategory': 'N/A',
+                'u_symptom': 'N/A',
+                'count': 0
+            }
+
+            # Calculate sentiment distribution
+            sentiment_distribution = (
+                df['customer_satisfaction']
+                .value_counts()
+                .reindex(['highly positive', 'positive', 'neutral', 'negative', 'highly negative'])
+                .dropna()  # Remove any sentiment categories that don't exist
+                .to_dict()
+            )
+
             report_data = {
                 "cards": {
-                    "most_complex": safe_dict(most_complex),
+                    "total_incidents": total_incidents,
+                    "most_complex": most_complex,
+                    "least_complex": least_complex,
+                    "most_negative": most_negative,
+                    "most_positive": most_positive,
                     "date_range": safe_dict(date_range),
-                    "avg_resolution_time": safe_dict(avg_resolution_time)
+                    "avg_resolution_time": safe_dict(avg_resolution_time),
+                    "overall_score": overall_score
                 },
                 "table_data": [safe_dict(row) for row in table_data],
-                "timing_data": timing_data
+                "timing_data": timing_data,
+                "sentiment_distribution": sentiment_distribution,
+                "actionable_insights": insights
             }
+            
+            # Log the final report data structure
+            logger.info("Final report data structure:")
+            logger.info(f"Cards: {len(report_data['cards'])} items")
+            logger.info(f"Table data: {len(report_data['table_data'])} rows")
+            logger.info(f"Timing data: {len(report_data['timing_data'])} items")
+            logger.info(f"Sentiment distribution: {len(report_data['sentiment_distribution'])} items")
+            logger.info(f"Actionable insights: {len(report_data['actionable_insights'])} items")
             
             return report_data
             
@@ -899,11 +1184,34 @@ async def get_report(
 @app.post("/generate_sop")
 async def generate_sop(data: dict):
     try:
+        # Input validation logging
+        logger.info("Starting SOP generation")
+        logger.debug(f"Received data: {data}")
+        
         issue_description = data.get("issue_description")
         resolution_notes = data.get("resolution_notes")
-
-        llm = Ollama(model="llama3.1")
         
+        # Validate inputs
+        if not issue_description or not resolution_notes:
+            logger.error("Missing required fields for SOP generation")
+            raise HTTPException(
+                status_code=400, 
+                detail="Both issue_description and resolution_notes are required"
+            )
+            
+        logger.info("Initializing Ollama LLM")
+        try:
+            llm = Ollama(model="llama3.1")
+            logger.info("Successfully initialized Ollama LLM")
+        except Exception as llm_error:
+            logger.error(f"Failed to initialize Ollama LLM: {str(llm_error)}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"LLM initialization failed: {str(llm_error)}"
+            )
+
+        # Log template creation
+        logger.info("Creating prompt template")
         template = """
         Given the following incident description and resolution notes, generate a detailed Standard Operating Procedure (SOP) to prevent similar incidents in the future and proactively address potential issues:
 
@@ -921,15 +1229,60 @@ async def generate_sop(data: dict):
         SOP:
         """
 
-        prompt = PromptTemplate(template=template, input_variables=["issue_description", "resolution_notes"])
-        chain = LLMChain(llm=llm, prompt=prompt)
+        try:
+            prompt = PromptTemplate(
+                template=template, 
+                input_variables=["issue_description", "resolution_notes"]
+            )
+            logger.info("Successfully created prompt template")
+        except Exception as prompt_error:
+            logger.error(f"Failed to create prompt template: {str(prompt_error)}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Prompt template creation failed: {str(prompt_error)}"
+            )
 
-        sop = chain.run(issue_description=issue_description, resolution_notes=resolution_notes)
+        # Create and run chain
+        logger.info("Creating LLM chain")
+        try:
+            chain = LLMChain(llm=llm, prompt=prompt)
+            logger.info("Successfully created LLM chain")
+            
+            logger.info("Running LLM chain")
+            # Use invoke instead of run
+            result = await chain.ainvoke({
+                "issue_description": issue_description,
+                "resolution_notes": resolution_notes
+            })
+            
+            logger.info("Successfully generated SOP")
+            sop = result.get('text', '')  # Get the text from the result
+            
+            # Log a sample of the output (first 100 chars)
+            logger.debug(f"Generated SOP preview: {sop[:100]}...")
+            
+            return {"sop": sop}
+            
+        except Exception as chain_error:
+            logger.error(f"Failed during chain creation or execution: {str(chain_error)}")
+            logger.error(f"Chain error type: {type(chain_error)}")
+            logger.error(f"Chain error traceback", exc_info=True)
+            raise HTTPException(
+                status_code=500, 
+                detail=f"SOP generation failed: {str(chain_error)}"
+            )
 
-        return {"sop": sop}
+    except HTTPException as http_error:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
-        logger.error(f"Error generating SOP: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error generating SOP: {str(e)}")
+        # Log unexpected errors
+        logger.error(f"Unexpected error in generate_sop: {str(e)}")
+        logger.error("Full traceback:", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Unexpected error during SOP generation: {str(e)}"
+        )
 
 # Add this near the top of the file with other helper functions
 def allowed_file(filename):
@@ -970,77 +1323,46 @@ def calculate_customer_satisfaction(df: pd.DataFrame) -> pd.DataFrame:
         # Create a copy of the input dataframe to store all scores
         scored_df = df.copy()
         
-        # Handle resolution time binning
+        # Handle reassignment count (0-27 range)
         try:
-            resolution_time_bins = pd.qcut(
-                scored_df['resolution_time'],
-                q=5,
-                labels=['1', '2', '3', '4', '5'],
-                duplicates='drop'
+            bins = [-float('inf'), 0, 1, 2, 4, float('inf')]
+            labels = ['5', '4', '3', '2', '1']
+            scored_df['reassignment_score'] = pd.cut(
+                scored_df['reassignment_count'],
+                bins=bins,
+                labels=labels,
+                include_lowest=True
             )
-            scored_df['resolution_time_score'] = resolution_time_bins
-        except Exception as e:
-            logger.warning(f"Error in resolution time binning: {e}")
-            scored_df['resolution_time_score'] = '3'  # Default value
-        
-        # Handle reassignment count binning
-        try:
-            reassign_counts = scored_df['reassignment_count'].clip(upper=scored_df['reassignment_count'].quantile(0.95))
-            unique_values = sorted(reassign_counts.unique())
-            
-            if len(unique_values) <= 1:
-                scored_df['reassignment_score'] = '3'  # Default value for single value
-            elif len(unique_values) < 5:
-                bins = [-float('inf')] + unique_values + [float('inf')]
-                labels = ['5', '4', '3', '2', '1'][:len(unique_values)]
-                reassign_score = pd.cut(
-                    reassign_counts,
-                    bins=bins,
-                    labels=labels,
-                    duplicates='drop'
-                )
-                scored_df['reassignment_score'] = reassign_score
-            else:
-                reassign_score = pd.qcut(
-                    reassign_counts,
-                    q=5,
-                    labels=['5', '4', '3', '2', '1'],
-                    duplicates='drop'
-                )
-                scored_df['reassignment_score'] = reassign_score
         except Exception as e:
             logger.warning(f"Error in reassignment binning: {e}")
-            scored_df['reassignment_score'] = '3'  # Default value
+            scored_df['reassignment_score'] = '3'
         
-        # Similar approach for reopen count
+        # Handle reopen count (0-8 range)
         try:
-            reopen_counts = scored_df['reopen_count'].clip(upper=scored_df['reopen_count'].quantile(0.95))
-            unique_values = sorted(reopen_counts.unique())
-            
-            if len(unique_values) <= 1:
-                scored_df['reopen_score'] = '3'  # Default value for single value
-            elif len(unique_values) < 5:
-                bins = [-float('inf')] + unique_values + [float('inf')]
-                labels = ['5', '4', '3', '2', '1'][:len(unique_values)]
-                reopen_score = pd.cut(
-                    reopen_counts,
-                    bins=bins,
-                    labels=labels,
-                    duplicates='drop'
-                )
-                scored_df['reopen_score'] = reopen_score
-            else:
-                reopen_score = pd.qcut(
-                    reopen_counts,
-                    q=5,
-                    labels=['5', '4', '3', '2', '1'],
-                    duplicates='drop'
-                )
-                scored_df['reopen_score'] = reopen_score
+            bins = [-float('inf'), 0, 1, 2, 3, float('inf')]
+            labels = ['5', '4', '3', '2', '1']
+            scored_df['reopen_score'] = pd.cut(
+                scored_df['reopen_count'],
+                bins=bins,
+                labels=labels,
+                include_lowest=True
+            )
         except Exception as e:
             logger.warning(f"Error in reopen binning: {e}")
-            scored_df['reopen_score'] = '3'  # Default value
+            scored_df['reopen_score'] = '3'
         
+        # Handle resolution time with qcut
+        try:
+            scored_df['resolution_time_score'] = pd.qcut(
+                scored_df['resolution_time'],
+                q=5,
+                labels=['5', '4', '3', '2', '1'],
+                duplicates='drop'
+            )
+        except Exception as e:
+            logger.warning(f"Error in resolution time binning: {e}")
+            scored_df['resolution_time_score'] = '3'
+            
         # Map sentiment scores
         sentiment_map = {
             'highly positive': '5',

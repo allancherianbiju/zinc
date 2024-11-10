@@ -16,6 +16,7 @@ import {
   IconMoon,
   IconLogout,
   IconSettings,
+  IconSparkles,
 } from "@tabler/icons-react";
 import { Link } from "react-router-dom";
 
@@ -25,15 +26,27 @@ export default function AppNavbar() {
   const [engagement, setEngagement] = useState<string>("");
 
   useEffect(() => {
-    const currentEngagement = localStorage.getItem("currentEngagement");
-    if (currentEngagement) {
-      setEngagement(JSON.parse(currentEngagement).name);
-    }
+    const handleStorageChange = () => {
+      const currentEngagement = localStorage.getItem("currentEngagement");
+      if (currentEngagement) {
+        setEngagement(JSON.parse(currentEngagement).name);
+      }
+    };
+
+    // Initial check
+    handleStorageChange();
+
+    // Listen for changes
+    window.addEventListener("storage", handleStorageChange);
+
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+    };
   }, []);
 
   const handleSignOut = () => {
     localStorage.removeItem("user");
-    // Redirect to home or login page
+    localStorage.removeItem("currentEngagement");
     window.location.href = "/";
   };
 
@@ -49,6 +62,10 @@ export default function AppNavbar() {
         </NavbarContent>
 
         <NavbarContent justify="end">
+          <div className="flex items-center gap-2">
+            <IconSparkles size={20} />
+            <p className="text-sm font-semibold">AI Insights</p>
+          </div>
           {user && (
             <NavbarItem>
               <Dropdown placement="bottom-end">
