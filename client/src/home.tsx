@@ -12,6 +12,8 @@ import {
   IconSun,
   IconMoon,
   IconCirclePlus,
+  IconGitBranch,
+  IconBrandGithub,
 } from "@tabler/icons-react";
 import { useTheme } from "next-themes";
 import { useNavigate } from "react-router-dom";
@@ -20,6 +22,7 @@ import { toast } from "sonner";
 import dataImage from "./assets/pexels-pixabay-210607.jpg";
 import connectImage from "./assets/pexels-cookiecutter-1148820.jpg";
 import reportImage from "./assets/pexels-energepic-com-27411-159888.jpg";
+import verifyImage from "./assets/pexels-goumbik-574071.jpg";
 
 import {
   Button,
@@ -72,6 +75,11 @@ type Report = {
 
 export default function Component() {
   const { isOpen, onOpen, onOpenChange } = useDisclosure();
+  const {
+    isOpen: isVerifyOpen,
+    onOpen: onOpenVerifyModal,
+    onOpenChange: onVerifyOpenChange,
+  } = useDisclosure();
   const [isLoading, setIsLoading] = useState(false);
   const [showFullName, setShowFullName] = useState(true);
   const [file, setFile] = useState<File | null>(null);
@@ -85,9 +93,11 @@ export default function Component() {
   >("new");
   const [engagementName, setEngagementName] = useState("");
   const [existingEngagementId, setExistingEngagementId] = useState("");
-  const [report, setReport] = useState<Report | null>(null);
+  // const [report, setReport] = useState<Report | null>(null);
   const [hasReport, setHasReport] = useState<boolean>(false);
   const [isCheckingReport, setIsCheckingReport] = useState<boolean>(true);
+  const [repoUrl, setRepoUrl] = useState("");
+  const [verificationData, setVerificationData] = useState<any>(null);
 
   useEffect(() => {
     const storedUser = localStorage.getItem("user");
@@ -117,26 +127,31 @@ export default function Component() {
     fetchEngagements();
   }, [user]);
 
-  useEffect(() => {
-    const fetchReport = async () => {
-      if (user) {
-        try {
-          const response = await api.get("/report");
-          setReport(response.data);
-        } catch (error) {
-          console.error("Failed to fetch report:", error);
-        }
-      }
-    };
-    fetchReport();
-  }, [user]);
+  // useEffect(() => {
+  //   const fetchReport = async () => {
+  //     if (user) {
+  //       try {
+  //         const response = await api.get("/report");
+  //         setReport(response.data);
+  //       } catch (error) {
+  //         console.error("Failed to fetch report:", error);
+  //       }
+  //     }
+  //   };
+  //   fetchReport();
+  // }, [user]);
 
   useEffect(() => {
     const checkReport = async () => {
       if (user) {
         try {
-          const response = await api.get(`/report/${user.email}`);
-          setHasReport(response.data.hasReport);
+          console.log(`Checking report for user: ${user.email}`);
+
+          const checkResponse = await api.get(
+            `/report/${encodeURIComponent(user.email)}/check`
+          );
+          setHasReport(checkResponse.data.hasReport);
+          console.log(`Report status:`, checkResponse.data);
         } catch (error) {
           console.error("Error checking report:", error);
           setHasReport(false);
@@ -233,6 +248,47 @@ export default function Component() {
       } else {
         toast.error("An unexpected error occurred. Please try again.");
       }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleVerifySubmit = async (
+    event: React.FormEvent<HTMLFormElement>
+  ) => {
+    event.preventDefault();
+    setIsLoading(true);
+
+    try {
+      // First verify the repository
+      const verifyResponse = await api.post("/verify", {
+        repoUrl,
+        engagement_type: selectedEngagement,
+        engagement_name:
+          selectedEngagement === "new" ? engagementName : undefined,
+        engagement_id:
+          selectedEngagement === "existing" ? existingEngagementId : undefined,
+      });
+
+      // Start the scan process
+      const scanResponse = await api.post("/api/scan/start", {
+        repo_url: repoUrl,
+        engagement_id: verifyResponse.data.repository.scan_id,
+      });
+
+      toast.success("Repository verification successful");
+      onVerifyOpenChange();
+
+      // Navigate to scan results page with scan ID
+      navigate("/scan", {
+        state: {
+          scanId: scanResponse.data.scan_id,
+          verificationData: verifyResponse.data,
+        },
+      });
+    } catch (error) {
+      console.error("Verification/Scan error:", error);
+      toast.error("Failed to verify repository");
     } finally {
       setIsLoading(false);
     }
@@ -374,10 +430,10 @@ export default function Component() {
                       startContent={<IconUpload className="w-4 h-4" />}
                       onPress={onOpen}
                       isDisabled={!user}
-                      radius="full"
+                      // radius="full"
                       // size="sm"
                     >
-                      Upload File
+                      Upload
                     </Button>
                     <Modal
                       backdrop="blur"
@@ -521,7 +577,171 @@ export default function Component() {
                     </Modal>
                   </CardFooter>
                 </Card>
+                <Card isFooterBlurred className="w-full h-[250px]">
+                  <CardHeader className="absolute z-10 top-1 flex-col items-start">
+                    <p className="text-tiny text-white/60 uppercase font-bold">
+                      Code Verification
+                    </p>
+                    <h4 className="text-white/90 font-medium text-xl">
+                      Scan your codebase
+                    </h4>
+                  </CardHeader>
+                  <Image
+                    removeWrapper
+                    alt="Card example background"
+                    className="z-0 w-full h-full scale-125 -translate-y-6 object-cover"
+                    src={verifyImage}
+                  />
+                  <CardBody></CardBody>
+                  <CardFooter className="absolute bg-white/30 bottom-0 border-t-1 border-zinc-100/50 z-10 justify-between">
+                    <div>
+                      <p className="text-white/60">
+                        Proactive code verification
+                      </p>
+                    </div>
+                    <Button
+                      onPress={onOpenVerifyModal}
+                      startContent={<IconGitBranch className="w-4 h-4" />}
+                      isDisabled={!user}
+                    >
+                      Verify Code
+                    </Button>
+                  </CardFooter>
+                </Card>
+                <Modal
+                  isOpen={isVerifyOpen}
+                  onOpenChange={onVerifyOpenChange}
+                  placement="center"
+                  size="2xl"
+                  backdrop="blur"
+                >
+                  <ModalContent>
+                    {(onClose) => (
+                      <>
+                        <ModalHeader className="flex items-center gap-1">
+                          Repository Verification
+                          <Tooltip
+                            content={
+                              <div className="px-1 py-2">
+                                Scan your GitHub repository for potential bugs
+                                and vulnerabilities
+                              </div>
+                            }
+                          >
+                            <IconInfoCircle className="w-5 h-5" />
+                          </Tooltip>
+                        </ModalHeader>
+                        <form
+                          onSubmit={handleVerifySubmit}
+                          encType="multipart/form-data"
+                        >
+                          <ModalBody>
+                            <RadioGroup
+                              label="Select Engagement"
+                              value={selectedEngagement}
+                              onValueChange={(value) =>
+                                setSelectedEngagement(
+                                  value as "new" | "existing"
+                                )
+                              }
+                              orientation="horizontal"
+                            >
+                              <Radio value="new">Create New</Radio>
+                              <Radio
+                                value="existing"
+                                isDisabled={engagements.length === 0}
+                                description={
+                                  engagements.length === 0
+                                    ? "No existing engagements found"
+                                    : undefined
+                                }
+                              >
+                                Select Existing
+                              </Radio>
+                            </RadioGroup>
 
+                            {selectedEngagement === "new" ? (
+                              <Input
+                                label="Engagement Name"
+                                placeholder="Enter engagement name"
+                                value={engagementName}
+                                onValueChange={setEngagementName}
+                                isRequired
+                                description="This name should be unique and will be used to identify your engagement"
+                              />
+                            ) : (
+                              <Select
+                                label="Select Existing Engagement"
+                                placeholder="Choose an engagement"
+                                selectedKeys={
+                                  existingEngagementId
+                                    ? [existingEngagementId]
+                                    : []
+                                }
+                                onChange={(e) =>
+                                  setExistingEngagementId(e.target.value)
+                                }
+                                isRequired
+                                isDisabled={engagements.length === 0}
+                                description="Select from one of your existing engagements"
+                              >
+                                {engagements.map((engagement) => (
+                                  <SelectItem
+                                    key={engagement.id}
+                                    value={engagement.id}
+                                  >
+                                    {engagement.name}
+                                  </SelectItem>
+                                ))}
+                              </Select>
+                            )}
+                            <Divider className="my-4" />
+
+                            <Input
+                              label="GitHub Repository URL"
+                              placeholder="https://github.com/username/repository"
+                              value={repoUrl}
+                              onValueChange={setRepoUrl}
+                              isRequired
+                              startContent={
+                                <IconBrandGithub className="w-4 h-4" />
+                              }
+                              description="Enter the URL of your public GitHub repository"
+                            />
+
+                            <Checkbox
+                              isSelected={agreedToTerms}
+                              onValueChange={setAgreedToTerms}
+                            >
+                              I agree to the{" "}
+                              <Link color="primary" href="#" size="sm">
+                                terms and conditions
+                              </Link>
+                            </Checkbox>
+                          </ModalBody>
+                          <ModalFooter>
+                            <Button
+                              color="primary"
+                              type="submit"
+                              className="mb-2"
+                              isLoading={isLoading}
+                              isDisabled={
+                                !agreedToTerms ||
+                                !repoUrl ||
+                                (selectedEngagement === "new" &&
+                                  !engagementName) ||
+                                (selectedEngagement === "existing" &&
+                                  !existingEngagementId)
+                              }
+                            >
+                              {isLoading ? "Scanning" : "Start Scan"}
+                            </Button>
+                          </ModalFooter>
+                        </form>
+                      </>
+                    )}
+                  </ModalContent>
+                </Modal>
                 <Card className="w-full h-[250px]">
                   <CardHeader className="absolute z-10 top-1 flex-col items-start">
                     <p className="text-tiny text-white/60 uppercase font-bold">
@@ -560,39 +780,21 @@ export default function Component() {
                     </Button>
                   </CardFooter>
                 </Card>
-                <Card isFooterBlurred className="w-full h-[250px]">
-                  <CardHeader className="absolute z-10 top-1 flex-col items-start">
-                    <p className="text-tiny text-white/60 uppercase font-bold">
-                      Connect Database
-                    </p>
-                    <h4 className="text-white/90 font-medium text-xl">
-                      Get real-time insights
-                    </h4>
-                  </CardHeader>
-                  <Image
-                    removeWrapper
-                    alt="Card example background"
-                    className="z-0 w-full h-full scale-125 -translate-y-6 object-cover"
-                    src={connectImage}
-                  />
-                  <CardBody></CardBody>
-                  <CardFooter className="absolute bg-white/30 bottom-0 border-t-1 border-zinc-100/50 z-10 justify-between">
-                    <div>
-                      <p className="text-white/60">Stream data in real-time</p>
-                    </div>
-                    <Button
-                      disabled
-                      startContent={<IconDatabase className="w-4 h-4" />}
-                    >
-                      Coming Soon
-                    </Button>
-                  </CardFooter>
-                </Card>
               </div>
             )}
           </div>
         </section>
       </main>
+      <footer className="flex justify-center items-center py-4 text-sm text-default-500 mb-4">
+        Made with ❤️ by{" "}
+        <Link
+          href="https://github.com/allancherianbiju"
+          className="ml-1 hover:text-primary"
+          target="_blank"
+        >
+          Allan
+        </Link>
+      </footer>
     </div>
   );
 }

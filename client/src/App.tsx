@@ -5,6 +5,7 @@ import Preview from "./preview";
 import ColumnMapping from "./pages/ColumnMapping";
 import Processing from "./pages/Processing";
 import Report from "./pages/Report";
+import { ScanPage } from "./pages/ScanPage";
 
 function App() {
   return (
@@ -15,6 +16,7 @@ function App() {
         <Route path="/mapping" element={<ColumnMapping />} />
         <Route path="/processing" element={<Processing />} />
         <Route path="/report" element={<Report />} />
+        <Route path="/scan" element={<ScanPage />} />
       </Routes>
     </Router>
   );

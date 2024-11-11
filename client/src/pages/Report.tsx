@@ -18,10 +18,13 @@ import {
   useDisclosure,
   Pagination,
   Divider,
+  ScrollShadow,
+  Skeleton,
 } from "@nextui-org/react";
 import Navbar from "../components/navbar";
 import api from "../api";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   IconCopy,
   IconCheck,
@@ -38,12 +41,25 @@ import {
   IconTrendingDown,
   IconAlertTriangle,
   IconArrowUpRight,
+  IconChevronDown,
+  IconChevronUp,
+  IconSearch,
+  IconFileAnalytics,
+  IconFileDescription,
+  IconNote,
+  IconRefresh,
+  IconProgressBolt,
+  IconReport,
+  IconReportAnalytics,
+  IconChartBar,
 } from "@tabler/icons-react";
 import { IncidentTimingChart } from "../components/IncidentTimingChart";
 import { CustomerSatisfactionChart } from "../components/CustomerSatisfactionChart";
 import Particles, { initParticlesEngine } from "@tsparticles/react";
 import { loadSlim } from "@tsparticles/slim";
 import type { Engine } from "@tsparticles/engine";
+import { getGeneratedContent, saveGeneratedContent } from "../utils/storage";
+import { toast } from "sonner";
 
 type TimeUnit = "minutes" | "hours" | "days" | "seconds";
 
@@ -65,11 +81,20 @@ const Report = () => {
   const [sortField, setSortField] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [isGeneratingSOP, setIsGeneratingSOP] = useState(false);
+  const [isGeneratingRCA, setIsGeneratingRCA] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
   const [timeUnit, setTimeUnit] = useState<TimeUnit>("minutes");
   const [showPositiveGroups, setShowPositiveGroups] = useState(false);
   const [showLeastComplex, setShowLeastComplex] = useState(false);
   const [init, setInit] = useState(false);
+  const [isDetailsExpanded, setIsDetailsExpanded] = useState(false);
+  const [activeAction, setActiveAction] = useState<"sop" | "rca" | null>(null);
+  const [isActionLoading, setIsActionLoading] = useState(false);
+  const [rcaResult, setRcaResult] = useState<string>("");
+  const [storedContent, setStoredContent] = useState<{
+    sop?: string;
+    rca?: string;
+  } | null>(null);
 
   const { isOpen, onOpen, onClose } = useDisclosure();
   const {
@@ -168,22 +193,55 @@ const Report = () => {
 
   const handleOpenModal = (row: any) => {
     setSelectedRow(row);
-    setSop("");
     onOpen();
+
+    const content = getGeneratedContent(
+      row.category,
+      row.subcategory,
+      row.u_symptom
+    );
+    if (content) {
+      setStoredContent(content);
+      if (content.sop) setSop(content.sop);
+      if (content.rca) setRcaResult(content.rca);
+    } else {
+      setStoredContent(null);
+      setSop("");
+      setRcaResult("");
+    }
   };
 
   const handleGenerateSOP = async () => {
-    if (!selectedRow) return;
-    setIsGeneratingSOP(true);
+    if (isGeneratingSOP || (activeAction === "sop" && storedContent?.sop))
+      return;
+
     try {
+      setIsActionLoading(true);
+      setIsGeneratingSOP(true);
+
       const response = await api.post("/generate_sop", {
         issue_description: selectedRow.issue_description,
         resolution_notes: selectedRow.resolution_notes,
       });
+
+      if (!response.data) {
+        throw new Error("Failed to generate SOP");
+      }
+
       setSop(response.data.sop);
+
+      saveGeneratedContent(
+        selectedRow.category,
+        selectedRow.subcategory,
+        selectedRow.u_symptom,
+        "sop",
+        response.data.sop
+      );
     } catch (error) {
       console.error("Error generating SOP:", error);
+      toast.error("Failed to generate Standard Operating Procedure");
     } finally {
+      setIsActionLoading(false);
       setIsGeneratingSOP(false);
     }
   };
@@ -236,6 +294,56 @@ const Report = () => {
     const currentIndex = units.indexOf(timeUnit);
     const nextIndex = (currentIndex + 1) % units.length;
     setTimeUnit(units[nextIndex]);
+  };
+
+  const handleGenerateRCA = async () => {
+    if (isGeneratingRCA || (activeAction === "rca" && storedContent?.rca))
+      return;
+
+    try {
+      setIsActionLoading(true);
+      setIsGeneratingRCA(true);
+
+      const response = await api.post("/generate_rca", {
+        issue_description: selectedRow.issue_description,
+        resolution_notes: selectedRow.resolution_notes,
+        stats: {
+          avg_resolution_time: selectedRow.avg_resolution_time,
+          resolution_time_status: selectedRow.resolution_time_status,
+          avg_reassignments: selectedRow.avg_reassignments,
+          reassignment_status: selectedRow.reassignment_status,
+          avg_reopens: selectedRow.avg_reopens,
+          reopen_status: selectedRow.reopen_status,
+        },
+      });
+
+      if (!response.data) {
+        throw new Error("Failed to generate RCA");
+      }
+
+      setRcaResult(response.data.rca);
+
+      // Store in local storage
+      saveGeneratedContent(
+        selectedRow.category,
+        selectedRow.subcategory,
+        selectedRow.u_symptom,
+        "rca",
+        response.data.rca
+      );
+    } catch (error) {
+      console.error("Error generating RCA:", error);
+      toast.error("Failed to generate Root Cause Analysis");
+    } finally {
+      setIsActionLoading(false);
+      setIsGeneratingRCA(false);
+    }
+  };
+
+  const handleCopyContent = (content: string) => {
+    navigator.clipboard.writeText(content);
+    setIsCopied(true);
+    setTimeout(() => setIsCopied(false), 2000);
   };
 
   if (!reportData) {
@@ -310,411 +418,418 @@ const Report = () => {
               Understanding Your Report
             </ModalHeader>
             <ModalBody>
-              <div className="space-y-6">
-                <section>
-                  <h3 className="text-lg font-semibold mb-2">
-                    Data Processing Overview
-                  </h3>
-                  <p className="text-sm text-default-500">
-                    This report analyzes your incident data through multiple
-                    dimensions to provide actionable insights. The data
-                    undergoes several processing steps including sentiment
-                    analysis of resolution notes, time-based calculations, and
-                    complexity assessments.
-                  </p>
-                </section>
+              <ScrollShadow size={50} hideScrollBar>
+                <div className="space-y-6 mb-4">
+                  <section>
+                    <h3 className="text-lg font-semibold mb-2">
+                      Data Processing Overview
+                    </h3>
+                    <p className="text-sm text-default-500">
+                      This report analyzes your incident data through multiple
+                      dimensions to provide actionable insights. The data
+                      undergoes several processing steps including sentiment
+                      analysis of resolution notes, time-based calculations, and
+                      complexity assessments.
+                    </p>
+                  </section>
 
-                <Divider className="my-4" />
+                  <Divider className="my-4" />
 
-                <section>
-                  <h3 className="text-lg font-semibold mb-2">
-                    Overall Performance Score (0-100)
-                  </h3>
-                  <p className="text-sm text-default-500 mb-2">
-                    This score combines multiple factors to give a comprehensive
-                    view of incident management performance:
-                  </p>
-                  <div className="space-y-2">
-                    <div className="bg-default-50 p-3 rounded-lg">
-                      <p className="text-sm font-medium">Score Composition:</p>
-                      <ul className="list-disc ml-6 mt-1 text-sm text-default-500">
-                        <li>
-                          70% based on weighted average of individual scores
-                          (1-5 scale):
-                          <ul className="list-circle ml-6 mt-1">
-                            <li>Resolution Time Score (30%)</li>
-                            <li>Reassignment Score (20%)</li>
-                            <li>Reopen Score (20%)</li>
-                            <li>Sentiment Score (30%)</li>
-                          </ul>
-                        </li>
-                        <li>30% based on SLA compliance rate</li>
-                      </ul>
-                    </div>
+                  <section>
+                    <h3 className="text-lg font-semibold mb-2">
+                      Overall Performance Score (0-100)
+                    </h3>
+                    <p className="text-sm text-default-500 mb-2">
+                      This score combines multiple factors to give a
+                      comprehensive view of incident management performance:
+                    </p>
+                    <div className="space-y-2">
+                      <div className="bg-default-50 p-3 rounded-lg">
+                        <p className="text-sm font-medium">
+                          Score Composition:
+                        </p>
+                        <ul className="list-disc ml-6 mt-1 text-sm text-default-500">
+                          <li>
+                            70% based on weighted average of individual scores
+                            (1-5 scale):
+                            <ul className="list-circle ml-6 mt-1">
+                              <li>Resolution Time Score (30%)</li>
+                              <li>Reassignment Score (20%)</li>
+                              <li>Reopen Score (20%)</li>
+                              <li>Sentiment Score (30%)</li>
+                            </ul>
+                          </li>
+                          <li>30% based on SLA compliance rate</li>
+                        </ul>
+                      </div>
 
-                    <div className="bg-default-50 p-3 rounded-lg mt-3">
-                      <p className="text-sm font-medium">
-                        Individual Score Calculations:
-                      </p>
-                      <div className="space-y-2 mt-2">
-                        <div>
-                          <p className="text-sm font-medium text-primary">
-                            Resolution Time Score (1-5):
-                          </p>
-                          <ul className="list-circle ml-6 text-sm text-default-500">
-                            <li>
-                              Based on percentile ranking of resolution times
-                            </li>
-                            <li>5: Fastest 20%</li>
-                            <li>4: Next 20%</li>
-                            <li>3: Middle 20%</li>
-                            <li>2: Next 20%</li>
-                            <li>1: Slowest 20%</li>
-                          </ul>
-                        </div>
-                        <div>
-                          <p className="text-sm font-medium text-primary">
-                            Reassignment Score (1-5):
-                          </p>
-                          <ul className="list-circle ml-6 text-sm text-default-500">
-                            <li>5: No reassignments</li>
-                            <li>4: 1 reassignment</li>
-                            <li>3: 2 reassignments</li>
-                            <li>2: 3-4 reassignments</li>
-                            <li>1: 5+ reassignments</li>
-                          </ul>
-                        </div>
-                        <div>
-                          <p className="text-sm font-medium text-primary">
-                            Reopen Score (1-5):
-                          </p>
-                          <ul className="list-circle ml-6 text-sm text-default-500">
-                            <li>5: No reopens</li>
-                            <li>4: 1 reopen</li>
-                            <li>3: 2 reopens</li>
-                            <li>2: 3 reopens</li>
-                            <li>1: 4+ reopens</li>
-                          </ul>
-                        </div>
-                        <div>
-                          <p className="text-sm font-medium text-primary">
-                            Sentiment Score (1-5):
-                          </p>
-                          <ul className="list-circle ml-6 text-sm text-default-500">
-                            <li>5: Highly Positive</li>
-                            <li>4: Positive</li>
-                            <li>3: Neutral</li>
-                            <li>2: Negative</li>
-                            <li>1: Highly Negative</li>
-                          </ul>
+                      <div className="bg-default-50 p-3 rounded-lg mt-3">
+                        <p className="text-sm font-medium">
+                          Individual Score Calculations:
+                        </p>
+                        <div className="space-y-2 mt-2">
+                          <div>
+                            <p className="text-sm font-medium text-primary">
+                              Resolution Time Score (1-5):
+                            </p>
+                            <ul className="list-circle ml-6 text-sm text-default-500">
+                              <li>
+                                Based on percentile ranking of resolution times
+                              </li>
+                              <li>5: Fastest 20%</li>
+                              <li>4: Next 20%</li>
+                              <li>3: Middle 20%</li>
+                              <li>2: Next 20%</li>
+                              <li>1: Slowest 20%</li>
+                            </ul>
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-primary">
+                              Reassignment Score (1-5):
+                            </p>
+                            <ul className="list-circle ml-6 text-sm text-default-500">
+                              <li>5: No reassignments</li>
+                              <li>4: 1 reassignment</li>
+                              <li>3: 2 reassignments</li>
+                              <li>2: 3-4 reassignments</li>
+                              <li>1: 5+ reassignments</li>
+                            </ul>
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-primary">
+                              Reopen Score (1-5):
+                            </p>
+                            <ul className="list-circle ml-6 text-sm text-default-500">
+                              <li>5: No reopens</li>
+                              <li>4: 1 reopen</li>
+                              <li>3: 2 reopens</li>
+                              <li>2: 3 reopens</li>
+                              <li>1: 4+ reopens</li>
+                            </ul>
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-primary">
+                              Sentiment Score (1-5):
+                            </p>
+                            <ul className="list-circle ml-6 text-sm text-default-500">
+                              <li>5: Highly Positive</li>
+                              <li>4: Positive</li>
+                              <li>3: Neutral</li>
+                              <li>2: Negative</li>
+                              <li>1: Highly Negative</li>
+                            </ul>
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div className="bg-default-50 p-3 rounded-lg mt-3">
-                      <p className="text-sm font-medium">Final Score Ranges:</p>
-                      <ul className="list-disc ml-6 mt-1">
-                        <li className="text-success text-sm">
-                          80-100: Outstanding performance
-                        </li>
-                        <li className="text-warning text-sm">
-                          60-79: Average performance
-                        </li>
-                        <li className="text-danger text-sm">
-                          0-59: Needs improvement
-                        </li>
-                      </ul>
-                    </div>
-                  </div>
-                </section>
-
-                <Divider className="my-4" />
-
-                <section>
-                  <h3 className="text-lg font-semibold mb-2">
-                    Customer Satisfaction Scoring
-                  </h3>
-                  <p className="text-sm text-default-500 mb-2">
-                    Customer satisfaction is evaluated using multiple components
-                    that combine to create a comprehensive satisfaction score:
-                  </p>
-
-                  <div className="space-y-4">
-                    <div className="bg-default-50 p-3 rounded-lg">
-                      <h4 className="font-medium text-primary mb-2">
-                        Resolution Time Score (1-5)
-                      </h4>
-                      <p className="text-sm text-default-500 mb-1">
-                        Based on percentile ranking of resolution times:
-                      </p>
-                      <ul className="list-circle ml-6 text-sm text-default-500">
-                        <li>5: Fastest 20% resolution</li>
-                        <li>4: Next 20% resolution</li>
-                        <li>3: Middle 20% resolution</li>
-                        <li>2: Next 20% resolution</li>
-                        <li>1: Slowest 20% resolution</li>
-                      </ul>
-                    </div>
-
-                    <div className="bg-default-50 p-3 rounded-lg">
-                      <h4 className="font-medium text-primary mb-2">
-                        Reassignment Score (1-5)
-                      </h4>
-                      <p className="text-sm text-default-500 mb-1">
-                        Based on number of times an incident is reassigned:
-                      </p>
-                      <ul className="list-circle ml-6 text-sm text-default-500">
-                        <li>5: No reassignments</li>
-                        <li>4: 1 reassignment</li>
-                        <li>3: 2 reassignments</li>
-                        <li>2: 3-4 reassignments</li>
-                        <li>1: 5+ reassignments</li>
-                      </ul>
-                    </div>
-
-                    <div className="bg-default-50 p-3 rounded-lg">
-                      <h4 className="font-medium text-primary mb-2">
-                        Reopen Score (1-5)
-                      </h4>
-                      <p className="text-sm text-default-500 mb-1">
-                        Based on number of times an incident is reopened:
-                      </p>
-                      <ul className="list-circle ml-6 text-sm text-default-500">
-                        <li>5: No reopens</li>
-                        <li>4: 1 reopen</li>
-                        <li>3: 2 reopens</li>
-                        <li>2: 3 reopens</li>
-                        <li>1: 4+ reopens</li>
-                      </ul>
-                    </div>
-
-                    <div className="bg-default-50 p-3 rounded-lg">
-                      <h4 className="font-medium text-primary mb-2">
-                        Sentiment Score (1-5)
-                      </h4>
-                      <p className="text-sm text-default-500 mb-1">
-                        Based on AI analysis of resolution notes:
-                      </p>
-                      <ul className="list-circle ml-6 text-sm text-default-500">
-                        <li>
-                          5: Highly Positive - Strong satisfaction indicators
-                        </li>
-                        <li>4: Positive - Clear satisfaction</li>
-                        <li>3: Neutral - No clear sentiment</li>
-                        <li>2: Negative - Signs of dissatisfaction</li>
-                        <li>
-                          1: Highly Negative - Strong dissatisfaction indicators
-                        </li>
-                      </ul>
-                    </div>
-
-                    <div className="bg-default-50 p-3 rounded-lg">
-                      <h4 className="font-medium text-primary mb-2">
-                        Final Satisfaction Score Calculation
-                      </h4>
-                      <p className="text-sm text-default-500 mb-1">
-                        Weighted average of component scores:
-                      </p>
-                      <ul className="list-disc ml-6 text-sm text-default-500">
-                        <li>Resolution Time Score: 30% weight</li>
-                        <li>Reassignment Score: 20% weight</li>
-                        <li>Reopen Score: 20% weight</li>
-                        <li>Sentiment Score: 30% weight</li>
-                      </ul>
-                      <div className="mt-3 p-2 bg-default-100 rounded">
+                      <div className="bg-default-50 p-3 rounded-lg mt-3">
                         <p className="text-sm font-medium">
-                          Final Score Interpretation:
+                          Final Score Ranges:
                         </p>
                         <ul className="list-disc ml-6 mt-1">
                           <li className="text-success text-sm">
-                            4.2 - 5.0: Highly Positive
-                          </li>
-                          <li className="text-success text-sm">
-                            3.4 - 4.1: Positive
+                            80-100: Outstanding performance
                           </li>
                           <li className="text-warning text-sm">
-                            2.6 - 3.3: Neutral
+                            60-79: Average performance
                           </li>
                           <li className="text-danger text-sm">
-                            1.8 - 2.5: Negative
-                          </li>
-                          <li className="text-danger text-sm">
-                            1.0 - 1.7: Highly Negative
+                            0-59: Needs improvement
                           </li>
                         </ul>
                       </div>
                     </div>
-                  </div>
+                  </section>
 
-                  <div className="mt-4 p-3 bg-default-100 rounded-lg">
-                    <p className="text-sm">
-                      <strong>Note:</strong> Customer satisfaction scores are
-                      used to:
+                  <Divider className="my-4" />
+
+                  <section>
+                    <h3 className="text-lg font-semibold mb-2">
+                      Customer Satisfaction Scoring
+                    </h3>
+                    <p className="text-sm text-default-500 mb-2">
+                      Customer satisfaction is evaluated using multiple
+                      components that combine to create a comprehensive
+                      satisfaction score:
                     </p>
-                    <ul className="list-disc ml-6 mt-1 text-sm text-default-500">
-                      <li>Identify trends in customer experience</li>
-                      <li>Highlight areas needing improvement</li>
-                      <li>Track the effectiveness of process changes</li>
-                      <li>Guide training and resource allocation decisions</li>
-                    </ul>
-                  </div>
-                </section>
 
-                <Divider className="my-4" />
+                    <div className="space-y-4">
+                      <div className="bg-default-50 p-3 rounded-lg">
+                        <h4 className="font-medium text-primary mb-2">
+                          Resolution Time Score (1-5)
+                        </h4>
+                        <p className="text-sm text-default-500 mb-1">
+                          Based on percentile ranking of resolution times:
+                        </p>
+                        <ul className="list-circle ml-6 text-sm text-default-500">
+                          <li>5: Fastest 20% resolution</li>
+                          <li>4: Next 20% resolution</li>
+                          <li>3: Middle 20% resolution</li>
+                          <li>2: Next 20% resolution</li>
+                          <li>1: Slowest 20% resolution</li>
+                        </ul>
+                      </div>
 
-                <section>
-                  <h3 className="text-lg font-semibold mb-2">
-                    Incident Complexity
-                  </h3>
-                  <p className="text-sm text-default-500 mb-2">
-                    Incident complexity is determined by combining normalized
-                    resolution times and reassignment counts:
-                  </p>
-                  <div className="bg-default-50 p-3 rounded-lg">
-                    <ul className="list-disc ml-6 text-sm text-default-500">
-                      <li>
-                        <span className="font-medium">Simple:</span> Quick
-                        resolution, minimal reassignments
-                      </li>
-                      <li>
-                        <span className="font-medium">Medium:</span> Average
-                        resolution time and reassignments
-                      </li>
-                      <li>
-                        <span className="font-medium">Hard:</span> Above average
-                        resolution time or reassignments
-                      </li>
-                      <li>
-                        <span className="font-medium">Complex:</span>{" "}
-                        Significantly above average in both metrics
-                      </li>
-                    </ul>
-                  </div>
-                </section>
+                      <div className="bg-default-50 p-3 rounded-lg">
+                        <h4 className="font-medium text-primary mb-2">
+                          Reassignment Score (1-5)
+                        </h4>
+                        <p className="text-sm text-default-500 mb-1">
+                          Based on number of times an incident is reassigned:
+                        </p>
+                        <ul className="list-circle ml-6 text-sm text-default-500">
+                          <li>5: No reassignments</li>
+                          <li>4: 1 reassignment</li>
+                          <li>3: 2 reassignments</li>
+                          <li>2: 3-4 reassignments</li>
+                          <li>1: 5+ reassignments</li>
+                        </ul>
+                      </div>
 
-                <Divider className="my-4" />
+                      <div className="bg-default-50 p-3 rounded-lg">
+                        <h4 className="font-medium text-primary mb-2">
+                          Reopen Score (1-5)
+                        </h4>
+                        <p className="text-sm text-default-500 mb-1">
+                          Based on number of times an incident is reopened:
+                        </p>
+                        <ul className="list-circle ml-6 text-sm text-default-500">
+                          <li>5: No reopens</li>
+                          <li>4: 1 reopen</li>
+                          <li>3: 2 reopens</li>
+                          <li>2: 3 reopens</li>
+                          <li>1: 4+ reopens</li>
+                        </ul>
+                      </div>
 
-                <section>
-                  <h3 className="text-lg font-semibold mb-2">
-                    Actionable Insights Generation
-                  </h3>
-                  <p className="text-sm text-default-500 mb-4">
-                    The system analyzes your incident data across multiple
-                    dimensions to generate actionable insights. Here's how each
-                    insight type is calculated:
-                  </p>
+                      <div className="bg-default-50 p-3 rounded-lg">
+                        <h4 className="font-medium text-primary mb-2">
+                          Sentiment Score (1-5)
+                        </h4>
+                        <p className="text-sm text-default-500 mb-1">
+                          Based on AI analysis of resolution notes:
+                        </p>
+                        <ul className="list-circle ml-6 text-sm text-default-500">
+                          <li>
+                            5: Highly Positive - Strong satisfaction indicators
+                          </li>
+                          <li>4: Positive - Clear satisfaction</li>
+                          <li>3: Neutral - No clear sentiment</li>
+                          <li>2: Negative - Signs of dissatisfaction</li>
+                          <li>
+                            1: Highly Negative - Strong dissatisfaction
+                            indicators
+                          </li>
+                        </ul>
+                      </div>
 
-                  <div className="space-y-4">
-                    <div>
-                      <h4 className="font-medium text-primary">
-                        Resolution Time Analysis
-                      </h4>
-                      <p className="text-sm text-default-500">
-                        Identifies incidents taking 50% longer than average to
-                        resolve. Highlights the most common category for
-                        high-resolution incidents and suggests process
-                        improvements based on resolution patterns.
-                      </p>
+                      <div className="bg-default-50 p-3 rounded-lg">
+                        <h4 className="font-medium text-primary mb-2">
+                          Final Satisfaction Score Calculation
+                        </h4>
+                        <p className="text-sm text-default-500 mb-1">
+                          Weighted average of component scores:
+                        </p>
+                        <ul className="list-disc ml-6 text-sm text-default-500">
+                          <li>Resolution Time Score: 30% weight</li>
+                          <li>Reassignment Score: 20% weight</li>
+                          <li>Reopen Score: 20% weight</li>
+                          <li>Sentiment Score: 30% weight</li>
+                        </ul>
+                        <div className="mt-3 p-2 bg-default-100 rounded">
+                          <p className="text-sm font-medium">
+                            Final Score Interpretation:
+                          </p>
+                          <ul className="list-disc ml-6 mt-1">
+                            <li className="text-success text-sm">
+                              4.2 - 5.0: Highly Positive
+                            </li>
+                            <li className="text-success text-sm">
+                              3.4 - 4.1: Positive
+                            </li>
+                            <li className="text-warning text-sm">
+                              2.6 - 3.3: Neutral
+                            </li>
+                            <li className="text-danger text-sm">
+                              1.8 - 2.5: Negative
+                            </li>
+                            <li className="text-danger text-sm">
+                              1.0 - 1.7: Highly Negative
+                            </li>
+                          </ul>
+                        </div>
+                      </div>
                     </div>
 
-                    <Divider className="my-2" />
-
-                    <div>
-                      <h4 className="font-medium text-primary">
-                        Incident Routing Analysis
-                      </h4>
-                      <p className="text-sm text-default-500">
-                        Examines incidents with more than 2 reassignments.
-                        Calculates reassignment rates by category and identifies
-                        potential routing rule improvements or training needs.
-                      </p>
-                    </div>
-
-                    <Divider className="my-2" />
-
-                    <div>
-                      <h4 className="font-medium text-primary">
-                        Customer Satisfaction Analysis
-                      </h4>
-                      <p className="text-sm text-default-500">
-                        Groups negative feedback by symptom and category.
-                        Calculates satisfaction rates and identifies areas with
-                        high concentrations of negative feedback for targeted
-                        improvement.
-                      </p>
-                    </div>
-
-                    <Divider className="my-2" />
-
-                    <div>
-                      <h4 className="font-medium text-primary">
-                        SLA Compliance Analysis
-                      </h4>
-                      <p className="text-sm text-default-500">
-                        Tracks missed SLAs by category and calculates breach
-                        rates. Identifies categories with high SLA miss rates
-                        and suggests resource allocation improvements.
-                      </p>
-                    </div>
-
-                    <Divider className="my-2" />
-
-                    <div>
-                      <h4 className="font-medium text-primary">
-                        Complexity Distribution
-                      </h4>
-                      <p className="text-sm text-default-500">
-                        Analyzes incident complexity based on resolution times
-                        and reassignment patterns. Identifies categories with
-                        high concentrations of complex incidents for knowledge
-                        base and training improvements.
-                      </p>
-                    </div>
-
-                    <Divider className="my-2" />
-
-                    <div>
-                      <h4 className="font-medium text-primary">
-                        Workload Distribution
-                      </h4>
-                      <p className="text-sm text-default-500">
-                        Calculates average incidents per resolver and identifies
-                        high workload situations:
+                    <div className="mt-4 p-3 bg-default-100 rounded-lg">
+                      <p className="text-sm">
+                        <strong>Note:</strong> Customer satisfaction scores are
+                        used to:
                       </p>
                       <ul className="list-disc ml-6 mt-1 text-sm text-default-500">
+                        <li>Identify trends in customer experience</li>
+                        <li>Highlight areas needing improvement</li>
+                        <li>Track the effectiveness of process changes</li>
                         <li>
-                          Flags resolvers handling 50% more than average load
-                        </li>
-                        <li>
-                          Identifies their most common incident categories
-                        </li>
-                        <li>High impact if workload is 2x average or more</li>
-                        <li>
-                          Suggests workload balancing and training opportunities
+                          Guide training and resource allocation decisions
                         </li>
                       </ul>
                     </div>
-                  </div>
+                  </section>
 
-                  <div className="mt-4 p-3 bg-default-100 rounded-lg">
-                    <p className="text-sm">
-                      <strong>Note:</strong> Impact levels (High/Medium/Low) are
-                      assigned based on:
+                  <Divider className="my-4" />
+
+                  <section>
+                    <h3 className="text-lg font-semibold mb-2">
+                      Incident Complexity
+                    </h3>
+                    <p className="text-sm text-default-500 mb-2">
+                      Incident complexity is determined by combining normalized
+                      resolution times and reassignment counts:
                     </p>
-                    <ul className="list-disc ml-6 mt-1 text-sm text-default-500">
-                      <li>Deviation from average metrics</li>
-                      <li>Volume of affected incidents</li>
-                      <li>Potential impact on overall performance score</li>
-                    </ul>
-                  </div>
-                </section>
-              </div>
+                    <div className="bg-default-50 p-3 rounded-lg">
+                      <ul className="list-disc ml-6 text-sm text-default-500">
+                        <li>
+                          <span className="font-medium">Simple:</span> Quick
+                          resolution, minimal reassignments
+                        </li>
+                        <li>
+                          <span className="font-medium">Medium:</span> Average
+                          resolution time and reassignments
+                        </li>
+                        <li>
+                          <span className="font-medium">Hard:</span> Above
+                          average resolution time or reassignments
+                        </li>
+                        <li>
+                          <span className="font-medium">Complex:</span>{" "}
+                          Significantly above average in both metrics
+                        </li>
+                      </ul>
+                    </div>
+                  </section>
+
+                  <Divider className="my-4" />
+
+                  <section>
+                    <h3 className="text-lg font-semibold mb-2">
+                      Actionable Insights Generation
+                    </h3>
+                    <p className="text-sm text-default-500 mb-4">
+                      The system analyzes your incident data across multiple
+                      dimensions to generate actionable insights. Here's how
+                      each insight type is calculated:
+                    </p>
+
+                    <div className="space-y-4">
+                      <div>
+                        <h4 className="font-medium text-primary">
+                          Resolution Time Analysis
+                        </h4>
+                        <p className="text-sm text-default-500">
+                          Identifies incidents taking 50% longer than average to
+                          resolve. Highlights the most common category for
+                          high-resolution incidents and suggests process
+                          improvements based on resolution patterns.
+                        </p>
+                      </div>
+
+                      <Divider className="my-2" />
+
+                      <div>
+                        <h4 className="font-medium text-primary">
+                          Incident Routing Analysis
+                        </h4>
+                        <p className="text-sm text-default-500">
+                          Examines incidents with more than 2 reassignments.
+                          Calculates reassignment rates by category and
+                          identifies potential routing rule improvements or
+                          training needs.
+                        </p>
+                      </div>
+
+                      <Divider className="my-2" />
+
+                      <div>
+                        <h4 className="font-medium text-primary">
+                          Customer Satisfaction Analysis
+                        </h4>
+                        <p className="text-sm text-default-500">
+                          Groups negative feedback by symptom and category.
+                          Calculates satisfaction rates and identifies areas
+                          with high concentrations of negative feedback for
+                          targeted improvement.
+                        </p>
+                      </div>
+
+                      <Divider className="my-2" />
+
+                      <div>
+                        <h4 className="font-medium text-primary">
+                          SLA Compliance Analysis
+                        </h4>
+                        <p className="text-sm text-default-500">
+                          Tracks missed SLAs by category and calculates breach
+                          rates. Identifies categories with high SLA miss rates
+                          and suggests resource allocation improvements.
+                        </p>
+                      </div>
+
+                      <Divider className="my-2" />
+
+                      <div>
+                        <h4 className="font-medium text-primary">
+                          Complexity Distribution
+                        </h4>
+                        <p className="text-sm text-default-500">
+                          Analyzes incident complexity based on resolution times
+                          and reassignment patterns. Identifies categories with
+                          high concentrations of complex incidents for knowledge
+                          base and training improvements.
+                        </p>
+                      </div>
+
+                      <Divider className="my-2" />
+
+                      <div>
+                        <h4 className="font-medium text-primary">
+                          Workload Distribution
+                        </h4>
+                        <p className="text-sm text-default-500">
+                          Calculates average incidents per resolver and
+                          identifies high workload situations:
+                        </p>
+                        <ul className="list-disc ml-6 mt-1 text-sm text-default-500">
+                          <li>
+                            Flags resolvers handling 50% more than average load
+                          </li>
+                          <li>
+                            Identifies their most common incident categories
+                          </li>
+                          <li>High impact if workload is 2x average or more</li>
+                          <li>
+                            Suggests workload balancing and training
+                            opportunities
+                          </li>
+                        </ul>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 p-3 bg-default-100 rounded-lg">
+                      <p className="text-sm">
+                        <strong>Note:</strong> Impact levels (High/Medium/Low)
+                        are assigned based on:
+                      </p>
+                      <ul className="list-disc ml-6 mt-1 text-sm text-default-500">
+                        <li>Deviation from average metrics</li>
+                        <li>Volume of affected incidents</li>
+                        <li>Potential impact on overall performance score</li>
+                      </ul>
+                    </div>
+                  </section>
+                </div>
+              </ScrollShadow>
             </ModalBody>
-            {/* <ModalFooter>
-              <Button color="primary" onPress={onInfoModalClose}>
-                Close
-              </Button>
-            </ModalFooter> */}
           </ModalContent>
         </Modal>
 
@@ -815,7 +930,10 @@ const Report = () => {
               </div>
             </div>
           )}
-
+        <div className="flex items-center gap-2 mb-4">
+          <IconChartBar className="text-primary" size={24} />
+          <h2 className="text-xl font-semibold">Overview</h2>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <Card>
             <CardBody className="flex flex-col">
@@ -839,7 +957,7 @@ const Report = () => {
               </div>
               <div className="flex items-center gap-2 mt-2">
                 <div className="flex items-center">
-                  {/* <span className="font-medium mr-2">From:</span> */}
+                  <span className="font-medium mr-2">From:</span>
                   <span className="text-default-500">
                     {new Date(dateRange.min_date).toLocaleDateString("en-GB", {
                       day: "2-digit",
@@ -850,7 +968,7 @@ const Report = () => {
                 </div>
                 <IconArrowRight className="mx-2 text-default-400" size={20} />
                 <div className="flex items-center">
-                  {/* <span className="font-medium mr-2">To:</span> */}
+                  <span className="font-medium mr-2">To:</span>
                   <span className="text-default-500">
                     {new Date(dateRange.max_date).toLocaleDateString("en-GB", {
                       day: "2-digit",
@@ -1043,10 +1161,11 @@ const Report = () => {
                 <TableCell>
                   <Button
                     size="sm"
+                    isIconOnly
                     onClick={() => handleOpenModal(row)}
                     disabled={isGeneratingSOP}
                   >
-                    View Details
+                    <IconReportAnalytics />
                   </Button>
                 </TableCell>
               </TableRow>
@@ -1065,7 +1184,7 @@ const Report = () => {
         <Modal
           isOpen={isOpen}
           onClose={handleCloseModal}
-          size="4xl"
+          size="5xl"
           scrollBehavior="inside"
           isDismissable={!isGeneratingSOP}
           isKeyboardDismissDisabled={isGeneratingSOP}
@@ -1075,51 +1194,286 @@ const Report = () => {
               Incident Details
             </ModalHeader>
             <ModalBody>
-              {selectedRow && (
-                <>
-                  <h3 className="text-lg font-semibold">Issue Description</h3>
-                  <p>{selectedRow.issue_description}</p>
-                  <Divider className="my-4" />
-                  <h3 className="text-lg font-semibold">Resolution Notes</h3>
-                  <p>{selectedRow.resolution_notes}</p>
-                  {sop && (
-                    <>
-                      <Divider className="my-4" />
-                      <h3 className="text-lg font-semibold">Generated SOP</h3>
-                      <div className="markdown-body">
-                        <ReactMarkdown>{sop}</ReactMarkdown>
-                      </div>
-                    </>
-                  )}
-                </>
-              )}
+              <ScrollShadow hideScrollBar>
+                {selectedRow && (
+                  <div className="space-y-4 mb-4">
+                    <Card>
+                      <CardBody>
+                        <div className="flex justify-between items-start">
+                          <div className="flex-grow space-y-4">
+                            <div>
+                              <h3 className="text-lg font-semibold flex items-center gap-2">
+                                <IconFileDescription
+                                  size={20}
+                                  className="text-primary"
+                                />
+                                Issue Description
+                              </h3>
+                              <p className="text-default-500">
+                                {selectedRow.issue_description}
+                              </p>
+                            </div>
+                            <div>
+                              <h3 className="text-lg font-semibold flex items-center gap-2">
+                                <IconNote size={20} className="text-primary" />
+                                Resolution Notes
+                              </h3>
+                              <p className="text-default-500">
+                                {selectedRow.resolution_notes}
+                              </p>
+                            </div>
+                          </div>
+                          <Button
+                            isIconOnly
+                            variant="light"
+                            onPress={() =>
+                              setIsDetailsExpanded(!isDetailsExpanded)
+                            }
+                          >
+                            {isDetailsExpanded ? (
+                              <IconChevronUp />
+                            ) : (
+                              <IconChevronDown />
+                            )}
+                          </Button>
+                        </div>
+
+                        {isDetailsExpanded && (
+                          <div
+                            className={`mt-4 space-y-2 ${
+                              isDetailsExpanded
+                                ? "animate-expand"
+                                : "animate-collapse"
+                            }`}
+                          >
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                              <div className="flex items-center gap-2">
+                                <IconDatabase
+                                  size={16}
+                                  className="text-primary"
+                                />
+                                <span className="font-medium">Category:</span>
+                                <span className="text-default-500">
+                                  {selectedRow.category}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <IconArrowsExchange2
+                                  size={16}
+                                  className="text-primary"
+                                />
+                                <span className="font-medium">
+                                  Subcategory:
+                                </span>
+                                <span className="text-default-500">
+                                  {selectedRow.subcategory}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <IconBrain size={16} className="text-primary" />
+                                <span className="font-medium">Symptom:</span>
+                                <span className="text-default-500">
+                                  {selectedRow.u_symptom}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <IconClock size={16} className="text-primary" />
+                                <span className="font-medium">
+                                  Avg. Resolution Time:
+                                </span>
+                                <span
+                                  className={`${
+                                    selectedRow.resolution_time_status ===
+                                    "above"
+                                      ? "text-danger"
+                                      : "text-success"
+                                  }`}
+                                >
+                                  {selectedRow.avg_resolution_time.toFixed(2)}{" "}
+                                  min
+                                </span>
+                                <span className="text-xs text-default-400">
+                                  (vs{" "}
+                                  {reportData.cards.overall_stats.avg_resolution_time.toFixed(
+                                    2
+                                  )}{" "}
+                                  avg)
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <IconArrowsExchange2
+                                  size={16}
+                                  className="text-primary"
+                                />
+                                <span className="font-medium">
+                                  Avg. Reassignments:
+                                </span>
+                                <span
+                                  className={`${
+                                    selectedRow.reassignment_status === "above"
+                                      ? "text-danger"
+                                      : "text-success"
+                                  }`}
+                                >
+                                  {selectedRow.avg_reassignments}
+                                </span>
+                                <span className="text-xs text-default-400">
+                                  (vs{" "}
+                                  {reportData.cards.overall_stats.avg_reassignments.toFixed(
+                                    2
+                                  )}{" "}
+                                  avg)
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <IconRefresh
+                                  size={16}
+                                  className="text-primary"
+                                />
+                                <span className="font-medium">
+                                  Avg. Reopens:
+                                </span>
+                                <span
+                                  className={`${
+                                    selectedRow.reopen_status === "above"
+                                      ? "text-danger"
+                                      : "text-success"
+                                  }`}
+                                >
+                                  {selectedRow.avg_reopens}
+                                </span>
+                                <span className="text-xs text-default-400">
+                                  (vs{" "}
+                                  {reportData.cards.overall_stats.avg_reopens.toFixed(
+                                    2
+                                  )}{" "}
+                                  avg)
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </CardBody>
+                    </Card>
+
+                    <div className="flex gap-4">
+                      <Button
+                        className="flex-1"
+                        color="primary"
+                        variant="light"
+                        startContent={<IconProgressBolt />}
+                        onPress={() => {
+                          setActiveAction("sop");
+                          handleGenerateSOP();
+                        }}
+                        isDisabled={
+                          Boolean(isGeneratingRCA) ||
+                          Boolean(isGeneratingSOP) ||
+                          Boolean(activeAction === "sop" && storedContent?.sop)
+                        }
+                      >
+                        {storedContent?.sop ? "View SOP" : "Generate SOP"}
+                      </Button>
+                      <Button
+                        className="flex-1"
+                        color="secondary"
+                        variant="light"
+                        startContent={<IconReport />}
+                        onPress={() => {
+                          setActiveAction("rca");
+                          handleGenerateRCA();
+                        }}
+                        isDisabled={
+                          Boolean(isGeneratingRCA) ||
+                          Boolean(isGeneratingSOP) ||
+                          Boolean(activeAction === "rca" && storedContent?.rca)
+                        }
+                      >
+                        {storedContent?.rca ? "View RCA" : "Generate RCA"}
+                      </Button>
+                    </div>
+
+                    {(activeAction || isActionLoading) && (
+                      <Card>
+                        <CardBody>
+                          {isActionLoading ? (
+                            <div className="space-y-4 p-4">
+                              <div className="space-y-3">
+                                <Skeleton className="w-3/4 h-6 rounded-lg" />{" "}
+                                {/* Title-like line */}
+                                <div className="space-y-2">
+                                  <Skeleton className="w-full h-4 rounded-lg" />{" "}
+                                  {/* Full width line */}
+                                  <Skeleton className="w-11/12 h-4 rounded-lg" />{" "}
+                                  {/* Slightly shorter line */}
+                                  <Skeleton className="w-11/12 h-4 rounded-lg" />{" "}
+                                  {/* Slightly shorter line */}
+                                  <Skeleton className="w-4/5 h-4 rounded-lg" />{" "}
+                                  {/* Even shorter line */}
+                                  <Skeleton className="w-4/5 h-4 rounded-lg" />{" "}
+                                  {/* Even shorter line */}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="relative group">
+                              <div className="markdown-container prose max-w-none">
+                                {activeAction === "sop" && sop && (
+                                  <>
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                      {sop}
+                                    </ReactMarkdown>
+                                    <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <Button
+                                        size="sm"
+                                        variant="light"
+                                        isIconOnly
+                                        onClick={() => handleCopyContent(sop)}
+                                        className="bg-default-100 hover:bg-default-200"
+                                      >
+                                        {isCopied ? (
+                                          <IconCheck size={18} />
+                                        ) : (
+                                          <IconCopy size={18} />
+                                        )}
+                                      </Button>
+                                    </div>
+                                  </>
+                                )}
+                                {activeAction === "rca" && rcaResult && (
+                                  <>
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                      {rcaResult}
+                                    </ReactMarkdown>
+                                    <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <Button
+                                        size="sm"
+                                        variant="light"
+                                        isIconOnly
+                                        onClick={() =>
+                                          handleCopyContent(rcaResult)
+                                        }
+                                        className="bg-default-100 hover:bg-default-200"
+                                      >
+                                        {isCopied ? (
+                                          <IconCheck size={18} />
+                                        ) : (
+                                          <IconCopy size={18} />
+                                        )}
+                                      </Button>
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </CardBody>
+                      </Card>
+                    )}
+                  </div>
+                )}
+              </ScrollShadow>
             </ModalBody>
-            <ModalFooter>
-              {!sop ? (
-                <Button
-                  color="primary"
-                  onClick={handleGenerateSOP}
-                  isLoading={isGeneratingSOP}
-                >
-                  {isGeneratingSOP ? "Generating..." : "Generate SOP"}
-                </Button>
-              ) : (
-                <Button
-                  color="primary"
-                  onClick={handleCopySOP}
-                  startContent={
-                    isCopied ? <IconCheck size={18} /> : <IconCopy size={18} />
-                  }
-                >
-                  {isCopied ? "Copied!" : "Copy SOP"}
-                </Button>
-              )}
-              {/* {!isGeneratingSOP && (
-                <Button color="secondary" onClick={onClose}>
-                  Close
-                </Button>
-              )} */}
-            </ModalFooter>
           </ModalContent>
         </Modal>
       </main>

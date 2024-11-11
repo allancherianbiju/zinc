@@ -2,6 +2,7 @@ from sqlalchemy import Column, String, DateTime, ForeignKey, Boolean, Integer, F
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime
+import uuid
 
 class User(Base):
     __tablename__ = "users"
@@ -25,6 +26,7 @@ class Engagement(Base):
     # Relationships
     user = relationship("User", back_populates="engagements")
     files = relationship("UploadedFile", back_populates="engagement")
+    scan_results = relationship("ScanResult", back_populates="engagement")
 
 class UploadedFile(Base):
     __tablename__ = "uploaded_files"
@@ -72,3 +74,14 @@ class Incidents(Base):
     reopen_score = Column(String)
     sentiment_score = Column(String)
     sentiment = Column(String)
+
+class ScanResult(Base):
+    __tablename__ = "scan_results"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    engagement_id = Column(String, ForeignKey('engagements.id'))
+    repository_url = Column(String)
+    results = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    engagement = relationship("Engagement", back_populates="scan_results")

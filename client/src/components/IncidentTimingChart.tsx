@@ -115,7 +115,7 @@ export function IncidentTimingChart({ timingData }: IncidentTimingChartProps) {
               onValueChange={(value) =>
                 setDisplayOption(value as DisplayOption)
               }
-              className="flex gap-4"
+              className="flex gap-4 align-middle mt-2"
             >
               <Radio key="opened" value="opened">
                 Opened

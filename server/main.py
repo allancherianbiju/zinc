@@ -41,6 +41,8 @@ import nltk
 import time
 from starlette.responses import StreamingResponse
 import asyncio
+from github import Github
+import base64
 
 # Set up logging
 logging.basicConfig(
@@ -398,10 +400,8 @@ async def analyze_sentiments_batch(df: pd.DataFrame) -> dict:
         
         try:
             llm = Ollama(
-                # model="llama3.1",
-                model="phi3.5",
+                model="llama3.2:3b",
                 temperature=0.1,
-                num_gpu=1,
                 system="You are a sentiment analyzer. Respond with ONLY ONE WORD from these options: highly_positive, positive, neutral, negative, highly_negative."
             )
             logger.info("Successfully initialized Ollama LLM")
@@ -515,6 +515,25 @@ async def process_data(
             completed_steps = set()
             
             try:
+                # Get the latest uploaded file first
+                latest_file = db.query(models.UploadedFile).filter(
+                    models.UploadedFile.user_email == current_user.email
+                ).order_by(models.UploadedFile.upload_date.desc()).first()
+
+                if not latest_file:
+                    raise HTTPException(status_code=404, detail="No uploaded file found")
+
+                file_path = f"uploads/{latest_file.stored_filename}"
+                
+                # Read the file and get DataFrame
+                df = pd.read_csv(file_path)
+                
+                # Now calculate chunks
+                chunk_size = 50
+                total_chunks = (len(df) + chunk_size - 1) // chunk_size
+                seconds_per_chunk = 3
+                total_seconds = total_chunks * seconds_per_chunk
+
                 # Updated progress steps with ETA
                 progress_steps = {
                     "file_reading": {
@@ -531,46 +550,37 @@ async def process_data(
                     },
                     "datetime_processing": {
                         "message": "Processing timestamps...",
-                        "progress": 30,
+                        "progress": 25,
                         "order": 3,
                         "eta": "Calculating..."
                     },
                     "sentiment_analysis": {
                         "message": "Analyzing sentiments...",
-                        "progress": 60,
+                        "progress": 30,
                         "order": 4,
-                        "eta": "Calculating..."
+                        "eta": total_seconds,
+                        "totalChunks": total_chunks,
+                        "processedChunks": 0
                     },
                     "scoring_calculation": {
                         "message": "Calculating scores...",
-                        "progress": 80,
+                        "progress": 90,
                         "order": 5,
-                        "eta": "Calculating..."
+                        "eta": "Almost done..."
                     },
                     "database_saving": {
                         "message": "Saving results...",
                         "progress": 100,
                         "order": 6,
-                        "eta": "Almost done..."
+                        "eta": "Done..."
                     }
                 }
 
-                # Get the latest uploaded file
-                latest_file = db.query(models.UploadedFile).filter(
-                    models.UploadedFile.user_email == current_user.email
-                ).order_by(models.UploadedFile.upload_date.desc()).first()
-
-                if not latest_file:
-                    raise HTTPException(status_code=404, detail="No uploaded file found")
-
-                file_path = f"uploads/{latest_file.stored_filename}"
-                
                 # Execute steps only if not already completed
                 if "file_reading" not in completed_steps:
                     completed_steps.add("file_reading")
                     yield json.dumps(progress_steps["file_reading"]) + "\n"
-                    df = pd.read_csv(file_path)
-                    await asyncio.sleep(0.1)  # Small delay to ensure proper streaming
+                    await asyncio.sleep(0.1)
 
                 # Data Mapping
                 if "data_mapping" not in completed_steps:
@@ -605,7 +615,10 @@ async def process_data(
                 # Sentiment Analysis
                 if "sentiment_analysis" not in completed_steps:
                     completed_steps.add("sentiment_analysis")
-                    yield json.dumps(progress_steps["sentiment_analysis"]) + "\n"
+                    yield json.dumps({
+                        **progress_steps["sentiment_analysis"],
+                        "processedChunks": 0,
+                    }) + "\n"
                     
                     # Await the sentiment analysis results
                     sentiments = await analyze_sentiments_batch(mapped_df)
@@ -668,7 +681,12 @@ async def process_data(
                 # Database Saving
                 if "database_saving" not in completed_steps:
                     completed_steps.add("database_saving")
-                    yield json.dumps(progress_steps["database_saving"]) + "\n"
+                    yield json.dumps({
+                        "message": "Saving results...",
+                        "progress": 100,
+                        "eta": "Done",
+                        "completed": True
+                    }) + "\n"
                     
                     # Save to database with all scores
                     safe_email = current_user.email.replace('@', '_').replace('.', '_')
@@ -683,9 +701,14 @@ async def process_data(
 
                 # Mark processing as complete
                 processing_complete = True
+                
+                # Send final completion message
                 yield json.dumps({
+                    "message": "Processing complete!",
                     "progress": 100,
-                    "message": "Processing complete!"
+                    "eta": "Done",
+                    "completed": True,
+                    "final": True
                 }) + "\n"
 
             except Exception as e:
@@ -696,7 +719,9 @@ async def process_data(
                     yield json.dumps({
                         "error": error_message,
                         "progress": 100,
-                        "eta": "Error occurred"
+                        "eta": "Error occurred",
+                        "completed": True,
+                        "final": True
                     }) + "\n"
                 processing_complete = True
 
@@ -1012,13 +1037,26 @@ async def get_report(
     current_user: Optional[models.User] = Depends(get_current_user)
 ):
     try:
+        # Add debug logging
+        logger.info(f"Received report request for user_email: {user_email}")
+        logger.info(f"Current user: {current_user.email if current_user else None}")
+        
         if not current_user:
+            logger.warning("Authentication required - no current user")
             raise HTTPException(status_code=401, detail="Authentication required")
         
-        # Convert email to the same safe string format used in process_data
+        # Convert email to safe string format
         safe_email = user_email.replace('@', '_').replace('.', '_')
-        engine = create_engine(f'sqlite:///./zinc_{safe_email}.db')
-        logger.info(f"Created engine for user {user_email}")
+        logger.info(f"Converted to safe_email: {safe_email}")
+        
+        # Check if database exists
+        db_path = f'./zinc_{safe_email}.db'
+        if not os.path.exists(db_path):
+            logger.warning(f"Database not found at path: {db_path}")
+            return {"hasReport": False}
+            
+        engine = create_engine(f'sqlite:///{db_path}')
+        logger.info(f"Created engine for database: {db_path}")
         
         with engine.connect() as connection:
             table_name = f"incident_data_{safe_email}"
@@ -1064,37 +1102,49 @@ async def get_report(
             # Create a clean DataFrame for table calculations
             table_df = df.copy()
 
-            # Calculate table data with proper grouping and averaging
+            # Calculate overall averages first (after loading the DataFrame)
+            overall_stats = {
+                'avg_reassignments': df['reassignment_count'].mean(),
+                'avg_reopens': df['reopen_count'].mean(),
+                'avg_resolution_time': df['resolution_time'].mean() / 60  # Convert to minutes
+            }
+
+            # Update the table data aggregation
             table_data = (
                 table_df.groupby(['category', 'subcategory', 'u_symptom'])
                 .agg({
                     'number': 'count',  # Count of incidents in each group
                     'resolution_time': 'sum',  # Total resolution time for the group
-                    'issue_description': lambda x: ' | '.join(x.unique()),  # Collect unique descriptions
-                    'resolution_notes': lambda x: ' | '.join(x.unique())  # Collect unique resolution notes
+                    'reassignment_count': 'mean',  # Average reassignments for the group
+                    'reopen_count': 'mean',  # Average reopens for the group
+                    'issue_description': lambda x: ' | '.join(x.unique()),
+                    'resolution_notes': lambda x: ' | '.join(x.unique())
                 })
                 .reset_index()
             )
 
-            # Calculate average resolution time properly (total time / number of incidents)
-            table_data['avg_resolution_time'] = (table_data['resolution_time'] / table_data['number']) / 60  # Convert to minutes
+            # Calculate averages and comparisons
+            table_data['avg_resolution_time'] = (table_data['resolution_time'] / table_data['number']) / 60
+            table_data['avg_reassignments'] = table_data['reassignment_count'].round(2)
+            table_data['avg_reopens'] = table_data['reopen_count'].round(2)
 
-            # Rename columns for frontend
+            # Add comparison flags
+            table_data['reassignment_status'] = table_data['avg_reassignments'].apply(
+                lambda x: 'above' if x > overall_stats['avg_reassignments'] else 'below'
+            )
+            table_data['reopen_status'] = table_data['avg_reopens'].apply(
+                lambda x: 'above' if x > overall_stats['avg_reopens'] else 'below'
+            )
+
+            # Add resolution time status along with other comparison flags
+            table_data['resolution_time_status'] = table_data['avg_resolution_time'].apply(
+                lambda x: 'above' if x > overall_stats['avg_resolution_time'] else 'below'
+            )
+
+            # Update the column renaming
             table_data = table_data.rename(columns={
                 'number': 'incident_count'
             }).to_dict('records')
-
-            logger.info("Sample of table data calculations:")
-            for row in table_data[:3]:
-                logger.info(f"""
-                Category: {row['category']}
-                Subcategory: {row['subcategory']}
-                Symptom: {row['u_symptom']}
-                Count: {row['incident_count']}
-                Avg Resolution Time (min): {row['avg_resolution_time']}
-                Sample Description: {row['issue_description'][:100]}...
-                Sample Resolution: {row['resolution_notes'][:100]}...
-                """)
 
             # Calculate overall score
             overall_score = calculate_overall_score(df)
@@ -1159,7 +1209,8 @@ async def get_report(
                     "most_positive": most_positive,
                     "date_range": safe_dict(date_range),
                     "avg_resolution_time": safe_dict(avg_resolution_time),
-                    "overall_score": overall_score
+                    "overall_score": overall_score,
+                    "overall_stats": overall_stats
                 },
                 "table_data": [safe_dict(row) for row in table_data],
                 "timing_data": timing_data,
@@ -1201,7 +1252,7 @@ async def generate_sop(data: dict):
             
         logger.info("Initializing Ollama LLM")
         try:
-            llm = Ollama(model="phi3.5")
+            llm = Ollama(model="llama3.2:3b")
             logger.info("Successfully initialized Ollama LLM")
         except Exception as llm_error:
             logger.error(f"Failed to initialize Ollama LLM: {str(llm_error)}")
@@ -1282,6 +1333,139 @@ async def generate_sop(data: dict):
         raise HTTPException(
             status_code=500, 
             detail=f"Unexpected error during SOP generation: {str(e)}"
+        )
+
+@app.post("/generate_rca")
+async def generate_rca(data: dict):
+    try:
+        logger.info("Starting RCA generation")
+        logger.debug(f"Received data: {data}")
+        
+        issue_description = data.get("issue_description")
+        resolution_notes = data.get("resolution_notes")
+        stats = data.get("stats", {})
+        
+        if not issue_description or not resolution_notes:
+            logger.error("Missing required fields for RCA generation")
+            raise HTTPException(
+                status_code=400, 
+                detail="Both issue_description and resolution_notes are required"
+            )
+            
+        logger.info("Initializing Ollama LLM")
+        try:
+            llm = Ollama(
+                model="llama3.2:3b",
+                temperature=0.7
+            )
+            logger.info("Successfully initialized Ollama LLM")
+        except Exception as llm_error:
+            logger.error(f"Failed to initialize Ollama LLM: {str(llm_error)}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"LLM initialization failed: {str(llm_error)}"
+            )
+
+        # Updated template to use direct variable names
+        template = """
+        Perform a comprehensive Root Cause Analysis (RCA) for the following group of similar IT incidents:
+
+        Issue Description: {issue_description}
+        Resolution Notes: {resolution_notes}
+
+        Statistical Information:
+        - Average Resolution Time: {avg_resolution_time} minutes ({resolution_time_status} average)
+        - Average Reassignments: {avg_reassignments} ({reassignment_status} average)
+        - Average Reopens: {avg_reopens} ({reopen_status} average)
+
+        Please provide a detailed analysis that includes:
+
+        # Pattern Analysis
+        - Identify common patterns across these incidents
+        - Highlight any systemic issues or recurring themes
+        - Note any environmental or timing-related patterns
+
+        # Impact Assessment
+        - Analyze the operational impact
+        - Evaluate the effect on service delivery
+        - Consider the business implications
+
+        # Five Whys Analysis
+        Perform a detailed Five Whys analysis to uncover the root cause:
+        1. Why did these incidents occur? (Initial Problem)
+        2. Why did that happen? (First Level)
+        3. Why did that occur? (Second Level)
+        4. Why was that the case? (Third Level)
+        5. Why ultimately? (Root Cause)
+
+        # Contributing Factors
+        - List key contributing factors
+        - Identify any organizational or process gaps
+        - Note any resource or training implications
+
+        Format the response in clear Markdown with appropriate headers, bullet points, and emphasis for key findings.
+        """
+
+        try:
+            # Update input variables to match the flattened structure
+            prompt = PromptTemplate(
+                template=template,
+                input_variables=[
+                    "issue_description",
+                    "resolution_notes",
+                    "avg_resolution_time",
+                    "resolution_time_status",
+                    "avg_reassignments",
+                    "reassignment_status",
+                    "avg_reopens",
+                    "reopen_status"
+                ]
+            )
+            logger.info("Successfully created RCA prompt template")
+        except Exception as prompt_error:
+            logger.error(f"Failed to create prompt template: {str(prompt_error)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"RCA prompt template creation failed: {str(prompt_error)}"
+            )
+
+        try:
+            chain = LLMChain(llm=llm, prompt=prompt)
+            logger.info("Successfully created LLM chain")
+            
+            # Flatten the stats dictionary into the main input dictionary
+            input_data = {
+                "issue_description": issue_description,
+                "resolution_notes": resolution_notes,
+                **stats  # Spread the stats dictionary
+            }
+            
+            result = await chain.ainvoke(input_data)
+            
+            logger.info("Successfully generated RCA")
+            rca = result.get('text', '')
+            
+            logger.debug(f"Generated RCA preview: {rca[:100]}...")
+            
+            return {"rca": rca}
+            
+        except Exception as chain_error:
+            logger.error(f"Failed during chain creation or execution: {str(chain_error)}")
+            logger.error(f"Chain error type: {type(chain_error)}")
+            logger.error(f"Chain error traceback", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"RCA generation failed: {str(chain_error)}"
+            )
+
+    except HTTPException as http_error:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in generate_rca: {str(e)}")
+        logger.error("Full traceback:", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error during RCA generation: {str(e)}"
         )
 
 # Add this near the top of the file with other helper functions
@@ -1418,5 +1602,240 @@ def calculate_customer_satisfaction(df: pd.DataFrame) -> pd.DataFrame:
         df['reopen_score'] = '3'
         df['sentiment_score'] = '3'
         return df
+
+@app.post("/chat")
+async def chat(message: dict):
+    try:
+        logger.info("Starting chat request")
+        
+        llm = Ollama(
+            model="llama3.2:3b",
+            temperature=0.7,
+            system="""You are an ITSM (IT Service Management) expert AI assistant. Your primary focus is helping users understand and resolve IT service-related issues, incidents, and problems. You have deep knowledge of:
+
+            1. ITIL frameworks and best practices
+            2. Incident management and problem management
+            3. Service desk operations and ticket handling
+            4. Root cause analysis
+            5. IT service continuity
+            6. Change management processes
+            7. SLA management and reporting
+
+            Keep your responses focused on ITSM-related topics. If asked about unrelated subjects, politely redirect the conversation to ITSM matters. Be concise but thorough in your explanations, and always aim to provide actionable advice based on ITIL best practices."""
+        )
+
+        response = await llm.ainvoke(message["message"])
+        return {"response": response}
+        
+    except Exception as e:
+        logger.error(f"Error in chat endpoint: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Chat error: {str(e)}"
+        )
+
+# Add a new endpoint specifically for checking report existence
+@app.get("/report/{user_email}/check")
+async def check_report(
+    user_email: str,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(get_current_user)
+):
+    try:
+        logger.info(f"Checking report existence for user_email: {user_email}")
+        
+        if not current_user:
+            logger.warning("Authentication required - no current user")
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
+        safe_email = user_email.replace('@', '_').replace('.', '_')
+        db_path = f'./zinc_{safe_email}.db'
+        
+        has_report = os.path.exists(db_path)
+        logger.info(f"Report exists: {has_report} at path: {db_path}")
+        
+        return {"hasReport": has_report}
+        
+    except Exception as e:
+        logger.error(f"Error checking report existence: {str(e)}")
+        return {"hasReport": False}
+
+@app.post("/api/scan/start")
+async def start_scan(
+    repo_url: str = Body(...),
+    engagement_id: str = Body(...),
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(get_current_user)
+):
+    try:
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        # Extract owner and repo name from URL
+        # Example: https://github.com/owner/repo
+        parts = repo_url.strip("/").split("/")
+        owner = parts[-2]
+        repo = parts[-1]
+
+        # Initialize GitHub client
+        g = Github()
+        repository = g.get_repo(f"{owner}/{repo}")
+
+        # Get all files in the repository
+        contents = []
+        files = repository.get_contents("")
+        while files:
+            file_content = files.pop(0)
+            if file_content.type == "dir":
+                files.extend(repository.get_contents(file_content.path))
+            else:
+                try:
+                    # Only process certain file types
+                    if file_content.path.endswith(('.py', '.js', '.ts', '.tsx', '.jsx')):
+                        decoded_content = base64.b64decode(file_content.content).decode()
+                        contents.append({
+                            'path': file_content.path,
+                            'content': decoded_content
+                        })
+                except Exception as e:
+                    logger.error(f"Error processing file {file_content.path}: {str(e)}")
+
+        # Prepare context for LLM
+        context = "\n\n".join([f"File: {c['path']}\n{c['content']}" for c in contents])
+        
+        # Initialize LLM
+        llm = Ollama(
+            model="llama3.2:3b",
+            temperature=0.2,
+            system="""You are an expert code reviewer focused on identifying potential bugs, 
+            security vulnerabilities, and code quality issues. Analyze the provided code and 
+            provide specific, actionable feedback on:
+            1. Security vulnerabilities
+            2. Potential bugs and edge cases
+            3. Performance issues
+            4. Code quality concerns
+            Be specific in your findings and provide clear explanations."""
+        )
+
+        # Get analysis from LLM
+        response = await llm.ainvoke(
+            f"Analyze the following codebase for potential issues:\n\n{context}"
+        )
+
+        # Store results in database
+        scan_result = models.ScanResult(
+            engagement_id=engagement_id,
+            repository_url=repo_url,
+            results=response,
+            created_at=datetime.utcnow()
+        )
+        db.add(scan_result)
+        db.commit()
+
+        return {"status": "success", "scan_id": scan_result.id}
+
+    except Exception as e:
+        logger.error(f"Error in scan endpoint: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Scan error: {str(e)}"
+        )
+
+@app.get("/api/scan/status/{scan_id}")
+async def get_scan_status(
+    scan_id: str,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(get_current_user)
+):
+    try:
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        scan_result = db.query(models.ScanResult).filter(
+            models.ScanResult.id == scan_id
+        ).first()
+
+        if not scan_result:
+            raise HTTPException(status_code=404, detail="Scan not found")
+
+        return {
+            "status": "complete",
+            "results": scan_result.results
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting scan status: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting scan status: {str(e)}"
+        )
+
+class VerifyRequest(BaseModel):
+    repoUrl: str
+    engagement_type: str
+    engagement_name: Optional[str] = None
+    engagement_id: Optional[str] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "repoUrl": "https://github.com/owner/repo",
+                "engagement_type": "new",
+                "engagement_name": "My Project",
+                "engagement_id": None
+            }
+        }
+
+@app.post("/verify")
+async def verify_repository(
+    request: VerifyRequest,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(get_current_user)
+):
+    logger.info(f"Received verify request: {request}")
+    
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    try:
+        # Convert github.com to uithub.com
+        uithub_url = request.repoUrl.replace('github.com', 'uithub.com')
+        
+        # Make request to Uithub API
+        response = requests.get(
+            uithub_url,
+            headers={'Accept': 'application/json'}
+        )
+        
+        if response.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to fetch repository data")
+
+        repo_data = response.json()
+        
+        # Store scan result
+        scan_result = models.ScanResult(
+            engagement_id=request.engagement_id if request.engagement_type == "existing" else None,
+            repository_url=request.repoUrl,
+            results=json.dumps(repo_data),
+            created_at=datetime.utcnow()
+        )
+        db.add(scan_result)
+        db.commit()
+
+        # Extract repository info from URL
+        parts = request.repoUrl.strip("/").split("/")
+        return {
+            "status": "success",
+            "repository": {
+                "name": parts[-1],
+                "url": request.repoUrl,
+                "owner": parts[-2],
+                "scan_id": scan_result.id
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error validating repository: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 

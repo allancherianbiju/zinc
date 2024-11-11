@@ -60,6 +60,17 @@
     --chart-opened: #a78bfa; /* Lighter purple for dark mode */
     --chart-closed: #60a5fa; /* Lighter blue for dark mode */
   }
+
+  .markdown-container ul,
+  .markdown-container ol {
+    list-style: disc !important;
+    margin: revert !important;
+    padding: revert !important;
+  }
+
+  .markdown-container ol {
+    list-style: decimal !important;
+  }
 }
 
 @layer base {
@@ -69,4 +80,108 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+.animate-expand {
+  animation: expand 0.3s ease-out forwards;
+}
+
+.animate-collapse {
+  animation: collapse 0.3s ease-out forwards;
+}
+
+@keyframes expand {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    max-height: 500px; /* Adjust based on your content */
+  }
+}
+
+@keyframes collapse {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+    max-height: 500px;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-10px);
+    max-height: 0;
+  }
+}
+
+/* Add these to your existing styles */
+.group:hover .group-hover\:opacity-100 {
+  opacity: 1;
+}
+
+.transition-opacity {
+  transition: opacity 0.2s ease-in-out;
+}
+
+/* Ensure skeleton has proper contrast in both light and dark modes */
+.skeleton-pulse {
+  @apply animate-pulse bg-default-200 dark:bg-default-700;
+}
+
+/* Add these styles for proper markdown formatting */
+.markdown-container {
+  @apply text-default-700;
+}
+
+.markdown-container h1,
+.markdown-container h2,
+.markdown-container h3,
+.markdown-container h4,
+.markdown-container h5,
+.markdown-container h6 {
+  @apply font-bold mb-4 mt-6;
+}
+
+.markdown-container h1 {
+  @apply text-2xl;
+}
+.markdown-container h2 {
+  @apply text-xl;
+}
+.markdown-container h3 {
+  @apply text-lg;
+}
+
+.markdown-container p {
+  @apply mb-4 leading-relaxed;
+}
+
+.markdown-container ul,
+.markdown-container ol {
+  @apply mb-4 ml-6;
+}
+
+.markdown-container ul {
+  @apply list-disc;
+}
+.markdown-container ol {
+  @apply list-decimal;
+}
+
+.markdown-container li {
+  @apply mb-2;
+}
+
+.markdown-container code {
+  @apply px-1 py-0.5 bg-default-100 rounded text-sm;
+}
+
+.markdown-container pre {
+  @apply p-4 bg-default-100 rounded-lg overflow-x-auto mb-4;
+}
+
+.markdown-container blockquote {
+  @apply pl-4 border-l-4 border-default-300 italic my-4;
 }
