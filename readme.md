@@ -2,7 +2,7 @@
 
 ZINC (Zero Incidents) is an application that aims to aid in creating a "zero incident" future by offering the following features:
 
-- provide insights about the incidents raised and how they can be handled better in the future, with the goal of reducing the
+- provide insights about the incidents raised and how they can be handled better in the future, with the goal of reducing the number of incidents raised to zero.
 - predicting the estimated time and date for the final closure of a opened ticket based on the given attributes.
 
 # Architecture
@@ -11,9 +11,8 @@ Frontend: React.js (Typescript)
 UI Library: NextUI
 Backend: FastAPI (Python)
 Database: SQLite
-Caching: Redis
-GenAI Model: Llama 3.1 8B
-GenAI Framework: Langchain
+GenAI Model: Llama 3.2 3B
+GenAI Framework: Ollama + Langchain
 
 # User Flow
 
